@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pacer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; overflow: hidden;
+                 font-family: ui-monospace, Menlo, monospace; color: #9a9a9a; }
+    canvas { display: block; position: fixed; inset: 0; }
+    #ctrl { position: fixed; top: 14px; left: 16px; font-size: 12px; line-height: 1.7;
+            user-select: none; pointer-events: none; }
+    .row { opacity: 0.5; }
+    .row.active { opacity: 1; color: #fff; }
+    .row .caret { display: inline-block; width: 14px; color: #555; }
+    .row.active .caret { color: #fff; }
+    #help { position: fixed; bottom: 12px; left: 16px; font-size: 11px; opacity: 0.3; }
+    #nav  { position: fixed; top: 14px; right: 16px; font-size: 11px; opacity: 0.45; }
+    #status { position: fixed; bottom: 12px; right: 16px; font-size: 11px; opacity: 0.35; }
+    #phase { position: fixed; left: 50%; top: 50%;
+             transform: translate(-50%, -50%);
+             font-size: 44px; font-weight: 200; letter-spacing: 0.14em;
+             pointer-events: none; user-select: none; color: #fff; }
+    #countdown { position: fixed; left: 50%; top: calc(50% + 50px);
+                 transform: translateX(-50%);
+                 font-size: 18px; font-variant-numeric: tabular-nums;
+                 opacity: 0.45; color: #fff; pointer-events: none; }
+    #cycles { position: fixed; left: 50%; top: calc(50% - 60px);
+              transform: translateX(-50%); font-size: 11px; opacity: 0.35;
+              letter-spacing: 0.2em; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="cycles">—</div>
+  <div id="phase">—</div>
+  <div id="countdown">—</div>
+  <div id="ctrl"></div>
+  <div id="help">↑↓ exercise · F flip breath · R reset</div>
+  <div id="nav"></div>
+  <div id="status">connecting…</div>
+
+  <script type="module">
+    import { createBridge, exercises, exerciseNames, createScheduler, navHTML } from './common.js';
+
+    document.getElementById('nav').innerHTML = navHTML('pacer');
+
+    const bridge = createBridge();
+    let selectedExercise = 0;
+    let scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    function resize() {
+      const dpr = devicePixelRatio;
+      canvas.width = innerWidth * dpr;
+      canvas.height = innerHeight * dpr;
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+    }
+    resize();
+    addEventListener('resize', resize);
+
+    const phaseEl = document.getElementById('phase');
+    const countdownEl = document.getElementById('countdown');
+    const ctrlEl = document.getElementById('ctrl');
+    const statusEl = document.getElementById('status');
+    const cyclesEl = document.getElementById('cycles');
+
+    function renderCtrl() {
+      ctrlEl.innerHTML = exerciseNames.map((n, i) => {
+        const cls = i === selectedExercise ? 'row active' : 'row';
+        const caret = i === selectedExercise ? '▸' : ' ';
+        return `<div class="${cls}"><span class="caret">${caret}</span>${n}</div>`;
+      }).join('');
+    }
+    renderCtrl();
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        selectedExercise = (selectedExercise - 1 + exerciseNames.length) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        renderCtrl();
+      } else if (e.key === 'ArrowDown') {
+        selectedExercise = (selectedExercise + 1) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        renderCtrl();
+      } else if (e.key === 'f' || e.key === 'F') {
+        bridge.toggleFlip();
+      } else if (e.key === 'r' || e.key === 'R') {
+        scheduler.reset();
+      } else return;
+      e.preventDefault();
+    });
+
+    let lastT = performance.now() / 1000;
+    let smoothedActual = 0.5;
+
+    const COLOR_INHALE = '#6cc5e6';
+    const COLOR_EXHALE = '#e6b26c';
+    const COLOR_HOLD   = '#888';
+
+    function phaseColor(p) {
+      return p === 'inhale' ? COLOR_INHALE : p === 'exhale' ? COLOR_EXHALE : COLOR_HOLD;
+    }
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const now = performance.now() / 1000;
+      const dt = Math.min(0.1, now - lastT);
+      lastT = now;
+
+      scheduler.tick(dt);
+      const seg = scheduler.current();
+      const target01 = scheduler.targetAmplitude();
+      // mild smoothing of actual reading — rendering decoupled from 50Hz sensor
+      smoothedActual += (bridge.breath01 - smoothedActual) * (1 - Math.exp(-dt * 8));
+      const actual01 = smoothedActual;
+
+      const dpr = devicePixelRatio;
+      const w = canvas.width, h = canvas.height;
+      const cx = w / 2, cy = h / 2;
+      const maxR = Math.min(w, h) * 0.36;
+      const minR = maxR * 0.18;
+
+      ctx.fillStyle = '#070709';
+      ctx.fillRect(0, 0, w, h);
+
+      // Actual disc (filled). Alpha peaks when aligned with target.
+      const actualR = minR + (maxR - minR) * actual01;
+      const aligned = Math.abs(actual01 - target01);
+      const glow = Math.max(0, 1 - aligned * 3);
+      const col = phaseColor(seg.phase);
+      ctx.fillStyle = hex2rgba(col, 0.10 + glow * 0.28);
+      ctx.beginPath();
+      ctx.arc(cx, cy, actualR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Target ring (thin line, always drawn).
+      const targetR = minR + (maxR - minR) * target01;
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = seg.phase === 'hold' ? 0.5 : 0.95;
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.arc(cx, cy, targetR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Glow ring when well-aligned
+      if (glow > 0.3) {
+        ctx.strokeStyle = hex2rgba('#ffffff', glow * 0.45);
+        ctx.lineWidth = (3 + glow * 5) * dpr;
+        ctx.beginPath();
+        ctx.arc(cx, cy, targetR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Outer segment-progress arc
+      const segProgress = seg.elapsed / seg.duration;
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 3 * dpr;
+      ctx.beginPath();
+      ctx.arc(cx, cy, maxR + 24 * dpr, -Math.PI / 2,
+              -Math.PI / 2 + segProgress * Math.PI * 2);
+      ctx.stroke();
+
+      // update text
+      phaseEl.textContent = seg.phase.toUpperCase();
+      phaseEl.style.color = col;
+      countdownEl.textContent = Math.ceil(seg.remaining) + 's';
+      cyclesEl.textContent = `${seg.cycles} cycle${seg.cycles === 1 ? '' : 's'}`;
+
+      const parts = [];
+      if (bridge.connected) {
+        parts.push(`hr ${bridge.hr}${bridge.hrInst ? ' ('+bridge.hrInst+')' : ''}`);
+        parts.push(`still ${bridge.stillness.toFixed(2)}`);
+        if (bridge.battery != null) parts.push(`${bridge.battery}%`);
+        if (bridge.flip) parts.push('flip');
+      } else {
+        parts.push('disconnected');
+      }
+      statusEl.textContent = parts.join(' · ');
+    }
+
+    function hex2rgba(hex, a) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    tick();
+  </script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>coherence</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; overflow: hidden;
+                 font-family: ui-monospace, Menlo, monospace; color: #9a9a9a; }
+    canvas { display: block; position: fixed; inset: 0; }
+    #ctrl { position: fixed; top: 14px; left: 16px; font-size: 12px; line-height: 1.7;
+            user-select: none; pointer-events: none; }
+    .row { opacity: 0.5; }
+    .row.active { opacity: 1; color: #fff; }
+    .row .caret { display: inline-block; width: 14px; color: #555; }
+    #help { position: fixed; bottom: 12px; left: 16px; font-size: 11px; opacity: 0.3; }
+    #nav  { position: fixed; top: 14px; right: 16px; font-size: 11px; opacity: 0.45; }
+    #status { position: fixed; bottom: 12px; right: 16px; font-size: 11px; opacity: 0.35; }
+
+    #score { position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
+             text-align: center; pointer-events: none; user-select: none; }
+    #score .v { font-size: 44px; font-weight: 200; color: #fff;
+                font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+    #score .lbl { font-size: 11px; letter-spacing: 0.25em; opacity: 0.45;
+                  text-transform: uppercase; margin-top: -6px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="score"><div class="v" id="vScore">—</div><div class="lbl">coherence</div></div>
+  <div id="ctrl"></div>
+  <div id="help">↑↓ exercise · F flip · R reset</div>
+  <div id="nav"></div>
+  <div id="status">connecting…</div>
+
+  <script type="module">
+    import { createBridge, exercises, exerciseNames, createScheduler, navHTML } from './common.js';
+
+    document.getElementById('nav').innerHTML = navHTML('coherence');
+
+    const bridge = createBridge();
+    let selectedExercise = 0;
+    let scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    function resize() {
+      canvas.width = innerWidth * devicePixelRatio;
+      canvas.height = innerHeight * devicePixelRatio;
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+    }
+    resize();
+    addEventListener('resize', resize);
+
+    const ctrlEl = document.getElementById('ctrl');
+    const statusEl = document.getElementById('status');
+    const scoreEl = document.getElementById('vScore');
+    function renderCtrl() {
+      ctrlEl.innerHTML = exerciseNames.map((n, i) => {
+        const cls = i === selectedExercise ? 'row active' : 'row';
+        const caret = i === selectedExercise ? '▸' : ' ';
+        return `<div class="${cls}"><span class="caret">${caret}</span>${n}</div>`;
+      }).join('');
+    }
+    renderCtrl();
+    addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        selectedExercise = (selectedExercise - 1 + exerciseNames.length) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        renderCtrl();
+      } else if (e.key === 'ArrowDown') {
+        selectedExercise = (selectedExercise + 1) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        renderCtrl();
+      } else if (e.key === 'f' || e.key === 'F') {
+        bridge.toggleFlip();
+      } else if (e.key === 'r' || e.key === 'R') {
+        scheduler.reset();
+      } else return;
+      e.preventDefault();
+    });
+
+    // ---- rolling history (90 s at 10 Hz) ----
+    const FPS = 10;
+    const SECONDS = 90;
+    const N = FPS * SECONDS;
+    const hrBuf = new Float32Array(N);
+    const brBuf = new Float32Array(N);
+    let writeIdx = 0;
+    let histCount = 0;
+    let lastSample = -1;
+
+    function record(t, hrVal, brVal) {
+      if (t - lastSample < 1 / FPS) return;
+      lastSample = t;
+      hrBuf[writeIdx] = hrVal;
+      brBuf[writeIdx] = brVal;
+      writeIdx = (writeIdx + 1) % N;
+      histCount = Math.min(N, histCount + 1);
+    }
+
+    function coherence() {
+      // Pearson correlation between HR and breath over last ~60s, after
+      // DC-removing both. High correlation at breath frequency = high RSA.
+      const n = Math.min(histCount, FPS * 60);
+      if (n < 30) return 0;
+      let mh = 0, mb = 0;
+      for (let i = 0; i < n; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        mh += hrBuf[idx]; mb += brBuf[idx];
+      }
+      mh /= n; mb /= n;
+      let num = 0, dh = 0, db = 0;
+      for (let i = 0; i < n; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        const h = hrBuf[idx] - mh;
+        const b = brBuf[idx] - mb;
+        num += h * b;
+        dh += h * h;
+        db += b * b;
+      }
+      return num / (Math.sqrt(dh * db) + 1e-9);
+    }
+
+    let lastT = performance.now() / 1000;
+    let smoothedHR = 60;
+    let smoothedBR = 0.5;
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const now = performance.now() / 1000;
+      const dt = Math.min(0.1, now - lastT);
+      lastT = now;
+      scheduler.tick(dt);
+
+      const hrVal = bridge.hrInst > 0 ? bridge.hrInst : bridge.hr;
+      smoothedHR += (hrVal - smoothedHR) * (1 - Math.exp(-dt * 1.5));
+      smoothedBR += (bridge.breath01 - smoothedBR) * (1 - Math.exp(-dt * 6));
+      record(now, smoothedHR, smoothedBR);
+
+      const corr = coherence();
+      // HeartMath-style 0-10 score: shift [−1,1] → [0,10], squish negatives
+      const score = Math.max(0, Math.min(10, corr * 10));
+
+      // ---- render ----
+      const dpr = devicePixelRatio;
+      const w = canvas.width, h = canvas.height;
+      const padX = 60 * dpr;
+      const padTop = 100 * dpr;
+      const padBot = 60 * dpr;
+      const gap = 24 * dpr;
+      const chartH = (h - padTop - padBot - gap) / 2;
+      const chartW = w - padX * 2;
+
+      ctx.fillStyle = '#070709';
+      ctx.fillRect(0, 0, w, h);
+
+      function drawTrace(buf, top, color, label, minV, maxV) {
+        // axis frame
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 1 * dpr;
+        ctx.strokeRect(padX, top, chartW, chartH);
+
+        // label
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = `${11 * dpr}px ui-monospace, Menlo, monospace`;
+        ctx.textAlign = 'left';
+        ctx.fillText(label, padX + 6 * dpr, top + 14 * dpr);
+
+        // min/max labels
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.textAlign = 'right';
+        ctx.fillText(maxV.toFixed(0), padX - 6 * dpr, top + 10 * dpr);
+        ctx.fillText(minV.toFixed(0), padX - 6 * dpr, top + chartH);
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2 * dpr;
+        ctx.beginPath();
+        const nShown = Math.min(histCount, N);
+        for (let i = 0; i < nShown; i++) {
+          const idx = (writeIdx - 1 - i + N) % N;
+          const x = padX + chartW * (1 - i / N);
+          const norm = (buf[idx] - minV) / (maxV - minV + 1e-9);
+          const y = top + chartH * (1 - Math.max(0, Math.min(1, norm)));
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      // adaptive HR range
+      let hrMin = Infinity, hrMax = -Infinity;
+      const nShown = Math.min(histCount, N);
+      for (let i = 0; i < nShown; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        hrMin = Math.min(hrMin, hrBuf[idx]);
+        hrMax = Math.max(hrMax, hrBuf[idx]);
+      }
+      if (!isFinite(hrMin)) { hrMin = smoothedHR - 10; hrMax = smoothedHR + 10; }
+      const hrPad = Math.max(4, (hrMax - hrMin) * 0.2);
+
+      drawTrace(hrBuf, padTop, '#e06a7a', 'heart rate', hrMin - hrPad, hrMax + hrPad);
+      drawTrace(brBuf, padTop + chartH + gap, '#6cc5e6', 'breath',  0, 1);
+
+      // score color bands: red <3, yellow 3-6, green 6+
+      const scoreColor = score >= 6 ? '#7ee39a' : score >= 3 ? '#e8ca6d' : '#e06a7a';
+      scoreEl.textContent = score.toFixed(1);
+      scoreEl.style.color = scoreColor;
+
+      // band on right showing current phase
+      const seg = scheduler.current();
+      const phaseColor = seg.phase === 'inhale' ? '#6cc5e6'
+                       : seg.phase === 'exhale' ? '#e6b26c' : '#888';
+      ctx.fillStyle = phaseColor;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(w - padX + 6 * dpr, padTop, 8 * dpr, chartH * 2 + gap);
+      ctx.globalAlpha = 1;
+
+      const parts = [];
+      if (bridge.connected) {
+        parts.push(`hr ${bridge.hr}${bridge.hrInst ? ' ('+bridge.hrInst+')' : ''}`);
+        parts.push(`${seg.phase} ${Math.ceil(seg.remaining)}s`);
+        if (bridge.battery != null) parts.push(`${bridge.battery}%`);
+        if (bridge.flip) parts.push('flip');
+      } else {
+        parts.push('disconnected');
+      }
+      statusEl.textContent = parts.join(' · ');
+    }
+
+    tick();
+  </script>
+</body>
+</html>

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>polar h10 · ribbon</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #070709; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9a9a9a; }
+    #hud { position: fixed; top: 14px; left: 16px; font-size: 12px; line-height: 1.7;
+           user-select: none; pointer-events: none; }
+    .row { opacity: 0.5; }
+    .row.active { opacity: 1; color: #fff; }
+    .row .caret { display: inline-block; width: 14px; color: #555; }
+    .row.active .caret { color: #fff; }
+    .meta { margin-top: 10px; opacity: 0.3; font-size: 11px; }
+
+    #panel { position: fixed; top: 14px; right: 16px; font-size: 11px; opacity: 0.7; text-align: right;
+             user-select: none; pointer-events: none; line-height: 1.55; }
+    #panel .bpm { font-size: 22px; color: #fff; font-variant-numeric: tabular-nums; }
+    #panel .m   { font-variant-numeric: tabular-nums; }
+    #panel .lbl { color: #555; }
+    #panel .sep { height: 8px; }
+
+    #status { position: fixed; bottom: 12px; left: 16px; font-size: 11px; opacity: 0.4; }
+    #device { position: fixed; bottom: 12px; right: 16px; font-size: 11px; opacity: 0.35; text-align: right; }
+    #nav { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); font-size: 11px;
+           opacity: 0.45; user-select: none; pointer-events: auto; }
+    #nav a { color: inherit; text-decoration: none; margin: 0 8px; }
+    #nav a:hover { opacity: 1; color: #fff; }
+  </style>
+</head>
+<body>
+  <div id="nav">
+    <span style="color:#fff;opacity:0.9;margin:0 8px">ribbon</span>
+    <a href="pacer.html">pacer</a>
+    <a href="wave-match.html">wave</a>
+    <a href="coherence.html">coherence</a>
+  </div>
+  <div id="hud"></div>
+  <div id="panel">
+    <div class="bpm"><span id="vBpm">—</span></div>
+    <div class="lbl">bpm <span id="vBpmInst" class="m" style="opacity:0.55">—</span></div>
+    <div class="sep"></div>
+    <div class="m"><span id="vRmssd">—</span> <span class="lbl">rmssd ms</span></div>
+    <div class="m"><span id="vBreath">—</span> <span class="lbl">breath</span></div>
+    <div class="m"><span id="vBrpm">—</span> <span class="lbl">breath/min</span></div>
+    <div class="m"><span id="vStill">—</span> <span class="lbl">stillness</span></div>
+    <div class="m"><span id="vMag" class="lbl">mag —</span></div>
+    <div class="sep"></div>
+    <div class="m"><span id="vBatt">—</span> <span class="lbl">battery</span></div>
+  </div>
+  <div id="status">connecting…</div>
+  <div id="device"></div>
+
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ---- path modes -------------------------------------------------------
+    const V = (x, y, z) => new THREE.Vector3(x, y, z);
+    const pathModes = {
+      scroll: (u, ecg, coil) => {
+        const x = (u - 0.5) * 6.5;
+        const z = Math.sin(u * Math.PI * 2 * coil) * 0.4 * coil;
+        return V(x, ecg, z);
+      },
+      helix: (u, ecg, coil) => {
+        const x = (u - 0.5) * 6.5;
+        const theta = u * Math.PI * 2 * (coil + 0.01);
+        const r = 0.6 * coil + ecg;
+        return V(x, Math.sin(theta) * r, Math.cos(theta) * r);
+      },
+      spiral: (u, ecg, coil) => {
+        const turns = 2.0 + coil * 2.5;
+        const theta = u * Math.PI * 2 * turns;
+        const r = 0.25 + u * 2.2 + ecg * 0.6;
+        return V(Math.cos(theta) * r, Math.sin(theta) * r, (u - 0.5) * 0.8 * coil);
+      },
+      lissajous: (u, ecg, coil) => {
+        const a = 3, b = 2;
+        const phi = coil * Math.PI * 0.5;
+        const R = 1.8 + ecg * 0.6;
+        return V(
+          Math.sin(u * Math.PI * 2 * a + phi) * R,
+          Math.sin(u * Math.PI * 2 * b) * R,
+          Math.cos(u * Math.PI * 2 * a) * 0.6 * (coil + 0.3),
+        );
+      },
+      knot: (u, ecg, coil) => {
+        const p = 2, q = 3;
+        const t = u * Math.PI * 2;
+        const R = 1.8;
+        const r = 0.5 + coil * 0.3 + ecg * 0.5;
+        const cosQT = Math.cos(q * t);
+        return V(
+          (R + r * cosQT) * Math.cos(p * t),
+          (R + r * cosQT) * Math.sin(p * t),
+          r * Math.sin(q * t),
+        );
+      },
+    };
+    const MODE_NAMES = Object.keys(pathModes);
+
+    // ---- settings ---------------------------------------------------------
+    const settings = [
+      { name: 'mode',        value: 1,    values: MODE_NAMES },
+      { name: 'window (s)',  value: 6.0,  min: 2.0,  max: 15.0, step: 0.5 },
+      { name: 'amplitude',   value: 1.2,  min: 0.1,  max: 5.0,  step: 0.1 },
+      { name: 'tube radius', value: 0.05, min: 0.01, max: 0.30, step: 0.01 },
+      { name: 'path coil',   value: 0.6,  min: 0.0,  max: 3.0,  step: 0.05 },
+      { name: 'hue',         value: 0.58, min: 0.0,  max: 1.0,  step: 0.02 },
+      { name: 'camera dist', value: 5.5,  min: 2.0,  max: 14.0, step: 0.25 },
+      { name: 'breath gain', value: 1.0,  min: 0.0,  max: 3.0,  step: 0.1 },
+      { name: 'chaos gain',  value: 1.0,  min: 0.0,  max: 3.0,  step: 0.1 },
+    ];
+    const get = (n) => settings.find(s => s.name === n);
+    let selected = 0;
+
+    const current = {};
+    for (const s of settings) if (!s.values) current[s.name] = s.value;
+    const SMOOTH_K = 5;
+    function smoothSettings(dt) {
+      const alpha = 1 - Math.exp(-dt * SMOOTH_K);
+      for (const s of settings) {
+        if (s.values) continue;
+        current[s.name] += (s.value - current[s.name]) * alpha;
+      }
+    }
+
+    // ---- mode morph -------------------------------------------------------
+    let fromMode = MODE_NAMES[get('mode').value];
+    let toMode = fromMode;
+    let morphT = 1;
+    const MORPH_DURATION = 1.4;
+    const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+    function stepMorph(dt) { morphT = Math.min(1, morphT + dt / MORPH_DURATION); }
+    function switchMode() {
+      const target = MODE_NAMES[get('mode').value];
+      if (target === toMode) return;
+      fromMode = toMode;
+      toMode = target;
+      morphT = 0;
+    }
+
+    // ---- scene ------------------------------------------------------------
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x070709, 0.09);
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 100);
+    camera.position.set(0, 0, get('camera dist').value);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(devicePixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const world = new THREE.Group();
+    scene.add(world);
+
+    const clock = new THREE.Clock();
+    let lastT = 0;
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // ---- ECG ring buffer --------------------------------------------------
+    const SAMPLE_RATE = 130;
+    let ringSize = (SAMPLE_RATE * get('window (s)').value) | 0;
+    let ring = new Float32Array(ringSize);
+    let writeIdx = 0;
+
+    function resizeRing() {
+      ringSize = Math.max(64, (SAMPLE_RATE * get('window (s)').value) | 0);
+      ring = new Float32Array(ringSize);
+      writeIdx = 0;
+    }
+
+    // ---- derived physiology ----------------------------------------------
+
+    // Heart: GATT bpm (1 Hz) + instantaneous bpm from R-peak intervals.
+    let hr = 60;
+    let hrInst = 0;
+    let lastRPeakT = -1;
+
+    // R-peak detector (Pan-Tompkins-lite) applied per ECG sample.
+    // Pipeline: diff -> square -> moving-window average -> adaptive threshold.
+    const MW_SAMPLES = 15;                 // ~115 ms @ 130 Hz
+    const REFRACTORY = 33;                 // 250 ms @ 130 Hz (max ~240 bpm)
+    const mwBuf = new Float32Array(MW_SAMPLES);
+    let mwIdx = 0, mwSum = 0;
+    let prevEcg = 0;
+    let runningMax = 0.05;
+    let sampleTick = 0;
+    let lastPeakTick = -9999;
+    let rpArmed = true;                    // must fall below threshold to rearm
+
+    function onEcgSample(v) {
+      sampleTick++;
+      const d = v - prevEcg;
+      prevEcg = v;
+      const sq = d * d;
+      mwSum -= mwBuf[mwIdx];
+      mwBuf[mwIdx] = sq;
+      mwSum += sq;
+      mwIdx = (mwIdx + 1) % MW_SAMPLES;
+      const integrated = mwSum / MW_SAMPLES;
+      runningMax = Math.max(runningMax * 0.9995, integrated);
+      const threshold = runningMax * 0.35;
+
+      if (rpArmed && integrated > threshold && (sampleTick - lastPeakTick) > REFRACTORY) {
+        lastPeakTick = sampleTick;
+        rpArmed = false;
+        const now = clock.getElapsedTime();
+        const intensity = Math.min(2.2, 0.7 + integrated / runningMax);
+        if (lastRPeakT > 0) {
+          const rrMs = (now - lastRPeakT) * 1000;
+          hrInst = Math.round(60000 / rrMs);
+          pushRR(rrMs);
+        }
+        lastRPeakT = now;
+        triggerPulse(now, intensity);
+      }
+      // rearm once signal has fallen well below threshold
+      if (integrated < threshold * 0.4) {
+        rpArmed = true;
+      }
+    }
+
+    // HRV buffer, fed by R-peak intervals (tighter than GATT's 1/1024 RR).
+    const rrBuffer = [];
+    let rmssd = 0;
+    function pushRR(rrMs) {
+      rrBuffer.push(rrMs);
+      if (rrBuffer.length > 30) rrBuffer.shift();
+      if (rrBuffer.length >= 4) {
+        let sum = 0;
+        for (let i = 1; i < rrBuffer.length; i++) {
+          const d = rrBuffer[i] - rrBuffer[i - 1];
+          sum += d * d;
+        }
+        rmssd = Math.sqrt(sum / (rrBuffer.length - 1));
+      }
+    }
+    function chaosNorm() { return Math.max(0, Math.min(1, (rmssd - 8) / 80)); }
+
+    // Breath from orientation-free non-gravity residual magnitude.
+    // A slow EMA tracks gravity on each axis; the 3D residual length oscillates
+    // with chest-wall motion. DC-removed via a second (slower) EMA.
+    let gravityX = 0, gravityY = 0, gravityZ = 0;
+    let breathLP = 0, breathBase = 0, breath = 0;
+    let prevBreath = 0;
+    const breathCrossings = []; // timestamps of upward zero crossings
+
+    // Stillness from accel magnitude's *fractional* deviation from a
+    // self-calibrated baseline. Self-calibration avoids assuming a specific
+    // LSB/g scale (Polar firmware varies: raw ADC counts vs mg vs other).
+    const STILL_WIN = 250; // 5 s @ 50 Hz
+    const stillBuf = new Float32Array(STILL_WIN);
+    let stillIdx = 0, stillSum = 0;
+    let stillness = 1;
+    let accMagEMA = 0;
+    let accMagLast = 0;
+    let accInit = false;
+    let accSampleCount = 0;
+
+    function feedAcc(x, y, z, nowSec) {
+      // self-calibrate gravity vector (slow EMA, ~3 s time constant @ 50 Hz)
+      if (!accInit) {
+        gravityX = x; gravityY = y; gravityZ = z;
+        accMagEMA = Math.sqrt(x*x + y*y + z*z);
+        accInit = true;
+      } else {
+        gravityX = gravityX * 0.99 + x * 0.01;
+        gravityY = gravityY * 0.99 + y * 0.01;
+        gravityZ = gravityZ * 0.99 + z * 0.01;
+      }
+
+      // non-gravity residual magnitude — orientation-agnostic chest-motion proxy
+      const rx = x - gravityX, ry = y - gravityY, rz = z - gravityZ;
+      const resMag = Math.sqrt(rx*rx + ry*ry + rz*rz);
+      breathLP   = breathLP   * 0.85 + resMag * 0.15;    // LP: breathing band
+      breathBase = breathBase * 0.995 + breathLP * 0.005; // slow mean for DC removal
+      breath = (breathLP - breathBase) / 30; // normalize to ~±0.5 range at typical breathing
+
+      // upward zero-crossings — magnitude-based signal gives 2 per breath cycle,
+      // so we halve below when converting to breath/min.
+      if (prevBreath <= 0 && breath > 0.02) {
+        breathCrossings.push(nowSec);
+      }
+      prevBreath = breath;
+      while (breathCrossings.length && breathCrossings[0] < nowSec - 30) {
+        breathCrossings.shift();
+      }
+
+      // stillness via fractional deviation of magnitude from its slow mean
+      const mag = Math.sqrt(x*x + y*y + z*z);
+      accMagLast = mag;
+      accSampleCount++;
+      if (accSampleCount <= 5) {
+        console.log(`ACC sample ${accSampleCount}: x=${x} y=${y} z=${z} mag=${mag.toFixed(1)}`);
+      }
+      accMagEMA = accMagEMA * 0.999 + mag * 0.001;
+      const dev = Math.abs(mag - accMagEMA) / (accMagEMA + 1e-6);
+      stillSum -= stillBuf[stillIdx];
+      stillBuf[stillIdx] = dev;
+      stillSum += dev;
+      stillIdx = (stillIdx + 1) % STILL_WIN;
+      const avgDev = stillSum / STILL_WIN;
+      stillness = 1 - Math.min(1, avgDev * 25);
+    }
+
+    // ---- ribbon -----------------------------------------------------------
+    let tubeMesh = null;
+    const tubeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+    function rebuildTube() {
+      const n = ringSize;
+      const amp = current['amplitude'];
+      const coil = current['path coil'];
+      const pa = pathModes[fromMode];
+      const pb = pathModes[toMode];
+      const m = easeInOut(morphT);
+      const pts = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const idx = (writeIdx + i) % n;
+        const u = i / (n - 1);
+        const ecg = ring[idx] * amp;
+        if (m >= 0.999) {
+          pts[i] = pb(u, ecg, coil);
+        } else {
+          const a = pa(u, ecg, coil);
+          const b = pb(u, ecg, coil);
+          pts[i] = a.lerp(b, m);
+        }
+      }
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const segments = Math.min(600, n);
+      if (tubeMesh) {
+        world.remove(tubeMesh);
+        tubeMesh.geometry.dispose();
+      }
+      const geom = new THREE.TubeGeometry(curve, segments, current['tube radius'], 8, false);
+      tubeMesh = new THREE.Mesh(geom, tubeMat);
+      world.add(tubeMesh);
+    }
+
+    // ---- particle field (GPU) --------------------------------------------
+    const PARTICLE_COUNT = 4000;
+    const MAX_PULSES = 6;
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const phases = new Float32Array(PARTICLE_COUNT);
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const r = Math.cbrt(Math.random()) * 5.0;
+      const phi = Math.random() * Math.PI * 2;
+      const cosT = 1 - Math.random() * 2;
+      const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+      positions[i*3+0] = r * sinT * Math.cos(phi);
+      positions[i*3+1] = r * sinT * Math.sin(phi);
+      positions[i*3+2] = r * cosT;
+      phases[i] = Math.random();
+    }
+    const particleGeom = new THREE.BufferGeometry();
+    particleGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    particleGeom.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+
+    const pulseTimesArr = new Array(MAX_PULSES).fill(-10);
+    const pulseIntArr = new Array(MAX_PULSES).fill(1);
+    let pulseIdx = 0;
+    function triggerPulse(t, intensity = 1) {
+      pulseTimesArr[pulseIdx] = t;
+      pulseIntArr[pulseIdx] = intensity;
+      pulseIdx = (pulseIdx + 1) % MAX_PULSES;
+    }
+
+    const particleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime:      { value: 0 },
+        uPulseTime: { value: pulseTimesArr },
+        uPulseInt:  { value: pulseIntArr },
+        uColor:     { value: new THREE.Color(0xffffff) },
+        uDPR:       { value: renderer.getPixelRatio() },
+        uHRNorm:    { value: 0 },
+        uChaos:     { value: 0 },
+      },
+      vertexShader: /* glsl */`
+        uniform float uTime;
+        uniform float uPulseTime[${MAX_PULSES}];
+        uniform float uPulseInt[${MAX_PULSES}];
+        uniform float uDPR;
+        uniform float uHRNorm;
+        uniform float uChaos;
+        attribute float aPhase;
+        varying float vAlpha;
+
+        void main() {
+          vec3 pos = position;
+          float t = uTime + aPhase * 6.283;
+          float driftAmt = 0.22 + uHRNorm * 0.15 + uChaos * 0.55;
+          pos.x += sin(t * 0.24 + pos.y * 0.55) * driftAmt;
+          pos.y += cos(t * 0.31 + pos.z * 0.62) * driftAmt;
+          pos.z += sin(t * 0.27 + pos.x * 0.58) * driftAmt;
+
+          float pulseBoost = 0.0;
+          for (int i = 0; i < ${MAX_PULSES}; i++) {
+            float age = uTime - uPulseTime[i];
+            if (age > 0.0 && age < 1.8) {
+              float intensity = uPulseInt[i];
+              float wavefrontR = age * 3.2;
+              float d = length(pos);
+              float proximity = 1.0 - clamp(abs(d - wavefrontR) / 0.55, 0.0, 1.0);
+              float decay = pow(1.0 - age / 1.8, 1.4);
+              pulseBoost += proximity * decay * intensity;
+            }
+          }
+
+          vec3 dir = normalize(pos + vec3(1e-4));
+          pos += dir * pulseBoost * 0.55;
+
+          vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = (1.3 + pulseBoost * 5.0) * (260.0 / -mv.z) * uDPR;
+          vAlpha = 0.09 + pulseBoost * 0.75;
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform vec3 uColor;
+        varying float vAlpha;
+        void main() {
+          vec2 c = gl_PointCoord - 0.5;
+          float d = length(c);
+          if (d > 0.5) discard;
+          float a = smoothstep(0.5, 0.0, d) * vAlpha;
+          gl_FragColor = vec4(uColor, a);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const particles = new THREE.Points(particleGeom, particleMat);
+    world.add(particles);
+
+    // ---- HUD --------------------------------------------------------------
+    const hudEl = document.getElementById('hud');
+    const vBpm    = document.getElementById('vBpm');
+    const vBpmInst= document.getElementById('vBpmInst');
+    const vRmssd  = document.getElementById('vRmssd');
+    const vBreath = document.getElementById('vBreath');
+    const vBrpm   = document.getElementById('vBrpm');
+    const vStill  = document.getElementById('vStill');
+    const vMag    = document.getElementById('vMag');
+    const vBatt   = document.getElementById('vBatt');
+    const deviceEl= document.getElementById('device');
+
+    function displayValue(s) {
+      return s.values ? s.values[s.value] : s.value.toFixed(2);
+    }
+    function renderHUD() {
+      const rows = settings.map((s, i) => {
+        const cls = i === selected ? 'row active' : 'row';
+        const caret = i === selected ? '▸' : ' ';
+        const name = s.name.padEnd(13, ' ');
+        return `<div class="${cls}"><span class="caret">${caret}</span>${name} ${displayValue(s)}</div>`;
+      }).join('');
+      hudEl.innerHTML = rows + `<div class="meta">↑↓ select · ←→ adjust</div>`;
+    }
+
+    function adjust(s, dir) {
+      if (s.values) {
+        const n = s.values.length;
+        s.value = (s.value + dir + n) % n;
+      } else {
+        const v = s.value + dir * s.step;
+        s.value = Math.max(s.min, Math.min(s.max, +v.toFixed(3)));
+      }
+    }
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        selected = (selected - 1 + settings.length) % settings.length;
+      } else if (e.key === 'ArrowDown') {
+        selected = (selected + 1) % settings.length;
+      } else if (e.key === 'ArrowLeft') {
+        adjust(settings[selected], -1);
+        onChange(settings[selected].name);
+      } else if (e.key === 'ArrowRight') {
+        adjust(settings[selected], +1);
+        onChange(settings[selected].name);
+      } else return;
+      e.preventDefault();
+      renderHUD();
+    });
+
+    function onChange(name) {
+      if (name === 'window (s)') resizeRing();
+      if (name === 'mode') switchMode();
+    }
+
+    // ---- WebSocket --------------------------------------------------------
+    const statusEl = document.getElementById('status');
+    let ws;
+    function connect() {
+      ws = new WebSocket('ws://localhost:8765');
+      ws.onopen = () => statusEl.textContent = 'connected';
+      ws.onclose = () => {
+        statusEl.textContent = 'disconnected · retrying';
+        setTimeout(connect, 1000);
+      };
+      ws.onerror = () => statusEl.textContent = 'ws error';
+      ws.onmessage = (ev) => {
+        const m = JSON.parse(ev.data);
+        const t = clock.getElapsedTime();
+        if (m.type === 'ecg') {
+          for (const s of m.samples) {
+            const v = s / 1000; // µV → mV
+            ring[writeIdx] = v;
+            writeIdx = (writeIdx + 1) % ringSize;
+            onEcgSample(v);
+          }
+        } else if (m.type === 'hr') {
+          hr = m.bpm;
+          vBpm.textContent = hr;
+          // fallback: if R-peak detector is silent, still pulse on HR ticks
+          if (t - lastRPeakT > 2.0) {
+            triggerPulse(t, 1.0);
+          }
+        } else if (m.type === 'acc') {
+          for (const [x, y, z] of m.samples) feedAcc(x, y, z, t);
+        } else if (m.type === 'battery') {
+          vBatt.textContent = m.pct + '%';
+        } else if (m.type === 'device') {
+          const label = [m.model, m.firmware ? ('fw ' + m.firmware) : null].filter(Boolean).join(' · ');
+          deviceEl.textContent = label || m.name || '';
+        }
+      };
+    }
+    connect();
+
+    // ---- loop -------------------------------------------------------------
+    let breathSmooth = 0;
+    function tick() {
+      requestAnimationFrame(tick);
+      const t = clock.getElapsedTime();
+      const dt = Math.min(0.1, t - lastT);
+      lastT = t;
+
+      smoothSettings(dt);
+      stepMorph(dt);
+
+      breathSmooth += (breath - breathSmooth) * (1 - Math.exp(-dt * 4));
+      const breathGain = current['breath gain'];
+      const breathNorm = breathSmooth * breathGain;
+      world.scale.setScalar(1 + breathNorm * 0.4);
+      scene.fog.density = 0.09 - breathNorm * 0.05;
+
+      camera.position.z = current['camera dist'];
+
+      const chaos = chaosNorm() * current['chaos gain'];
+      const hueBase = current['hue'] + (hr - 60) / 120 * 0.12;
+      const hueWithChaos = (hueBase + chaos * 0.08 + 1) % 1;
+      tubeMat.color.setHSL(hueWithChaos, 0.68, 0.58);
+
+      particleMat.uniforms.uTime.value = t;
+      particleMat.uniforms.uColor.value.setHSL(hueWithChaos, 0.6, 0.7);
+      particleMat.uniforms.uHRNorm.value = Math.max(0, Math.min(1, (hr - 50) / 80));
+      particleMat.uniforms.uChaos.value = chaos;
+
+      // panel readouts (light polling; ok to write every frame)
+      vBpmInst.textContent = hrInst ? `(${hrInst})` : '';
+      vRmssd.textContent   = rmssd ? rmssd.toFixed(0) : '—';
+      vBreath.textContent  = (breathNorm >= 0 ? '+' : '') + breathNorm.toFixed(2);
+      // magnitude-based breath has ~2 up-crossings per cycle in 30 s window,
+      // so count ≈ cycles/min directly
+      vBrpm.textContent    = breathCrossings.length ? breathCrossings.length.toFixed(0) : '—';
+      vStill.textContent   = stillness.toFixed(2);
+      vMag.textContent     = accInit
+        ? `mag ${Math.round(accMagLast)} · base ${Math.round(accMagEMA)}`
+        : 'mag —';
+
+      rebuildTube();
+      renderer.render(scene, camera);
+    }
+
+    renderHUD();
+    tick();
+  </script>
+</body>
+</html>

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>wave match</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; overflow: hidden;
+                 font-family: ui-monospace, Menlo, monospace; color: #9a9a9a; }
+    canvas { display: block; position: fixed; inset: 0; }
+    #ctrl { position: fixed; top: 14px; left: 16px; font-size: 12px; line-height: 1.7;
+            user-select: none; pointer-events: none; }
+    .row { opacity: 0.5; }
+    .row.active { opacity: 1; color: #fff; }
+    .row .caret { display: inline-block; width: 14px; color: #555; }
+    #help { position: fixed; bottom: 12px; left: 16px; font-size: 11px; opacity: 0.3; }
+    #nav  { position: fixed; top: 14px; right: 16px; font-size: 11px; opacity: 0.45; }
+    #status { position: fixed; bottom: 12px; right: 16px; font-size: 11px; opacity: 0.35; }
+    #score { position: fixed; left: 50%; top: 20px;
+             transform: translateX(-50%); font-size: 12px; letter-spacing: 0.2em;
+             opacity: 0.7; pointer-events: none; user-select: none; }
+    #score .n { color: #fff; font-size: 18px; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="score">match <span class="n" id="vScore">—</span></div>
+  <div id="ctrl"></div>
+  <div id="help">↑↓ exercise · F flip · R reset</div>
+  <div id="nav"></div>
+  <div id="status">connecting…</div>
+
+  <script type="module">
+    import { createBridge, exercises, exerciseNames, createScheduler, navHTML } from './common.js';
+
+    document.getElementById('nav').innerHTML = navHTML('wave');
+
+    const bridge = createBridge();
+    let selectedExercise = 0; // coherence 5-5 is the natural default for wave matching
+    let scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    function resize() {
+      canvas.width = innerWidth * devicePixelRatio;
+      canvas.height = innerHeight * devicePixelRatio;
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+    }
+    resize();
+    addEventListener('resize', resize);
+
+    const ctrlEl = document.getElementById('ctrl');
+    const statusEl = document.getElementById('status');
+    const scoreEl = document.getElementById('vScore');
+
+    function renderCtrl() {
+      ctrlEl.innerHTML = exerciseNames.map((n, i) => {
+        const cls = i === selectedExercise ? 'row active' : 'row';
+        const caret = i === selectedExercise ? '▸' : ' ';
+        return `<div class="${cls}"><span class="caret">${caret}</span>${n}</div>`;
+      }).join('');
+    }
+    renderCtrl();
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        selectedExercise = (selectedExercise - 1 + exerciseNames.length) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        resetHistory();
+        renderCtrl();
+      } else if (e.key === 'ArrowDown') {
+        selectedExercise = (selectedExercise + 1) % exerciseNames.length;
+        scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+        resetHistory();
+        renderCtrl();
+      } else if (e.key === 'f' || e.key === 'F') {
+        bridge.toggleFlip();
+      } else if (e.key === 'r' || e.key === 'R') {
+        scheduler.reset(); resetHistory();
+      } else return;
+      e.preventDefault();
+    });
+
+    // ---- rolling history (60 s at 30 fps) ----
+    const SAMPLES_PER_SEC = 30;
+    const HISTORY_SECONDS = 60;
+    const N = SAMPLES_PER_SEC * HISTORY_SECONDS;
+    let targetHist = new Float32Array(N).fill(0.5);
+    let actualHist = new Float32Array(N).fill(0.5);
+    let histCount = 0;
+    let writeIdx = 0;
+    let lastSample = -1;
+    function resetHistory() {
+      targetHist.fill(0.5); actualHist.fill(0.5); histCount = 0; writeIdx = 0;
+    }
+
+    function recordSample(t, target, actual) {
+      if (t - lastSample < 1 / SAMPLES_PER_SEC) return;
+      lastSample = t;
+      targetHist[writeIdx] = target;
+      actualHist[writeIdx] = actual;
+      writeIdx = (writeIdx + 1) % N;
+      histCount = Math.min(N, histCount + 1);
+    }
+
+    function computeMatch() {
+      // Pearson-like correlation over available history.
+      const n = Math.min(histCount, N);
+      if (n < 30) return 0;
+      let sumT = 0, sumA = 0;
+      for (let i = 0; i < n; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        sumT += targetHist[idx];
+        sumA += actualHist[idx];
+      }
+      const mT = sumT / n, mA = sumA / n;
+      let num = 0, dT = 0, dA = 0;
+      for (let i = 0; i < n; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        const t = targetHist[idx] - mT;
+        const a = actualHist[idx] - mA;
+        num += t * a;
+        dT += t * t;
+        dA += a * a;
+      }
+      const corr = num / (Math.sqrt(dT * dA) + 1e-9);
+      return Math.max(0, corr); // negative correlation = user should flip
+    }
+
+    let lastT = performance.now() / 1000;
+    let smoothedActual = 0.5;
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const now = performance.now() / 1000;
+      const dt = Math.min(0.1, now - lastT);
+      lastT = now;
+
+      scheduler.tick(dt);
+      const target = scheduler.targetAmplitude();
+      smoothedActual += (bridge.breath01 - smoothedActual) * (1 - Math.exp(-dt * 8));
+      recordSample(now, target, smoothedActual);
+
+      // ---- render ----
+      const dpr = devicePixelRatio;
+      const w = canvas.width, h = canvas.height;
+      const padX = 40 * dpr;
+      const padTop = 80 * dpr;
+      const padBot = 60 * dpr;
+      const chartW = w - padX * 2;
+      const chartH = h - padTop - padBot;
+      const cx = w / 2;
+
+      ctx.fillStyle = '#070709';
+      ctx.fillRect(0, 0, w, h);
+
+      // baseline
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(padX, padTop + chartH * 0.5);
+      ctx.lineTo(padX + chartW, padTop + chartH * 0.5);
+      ctx.stroke();
+
+      // Map history to x positions. The newest sample sits at the "now" cursor
+      // (screen center). Older samples are to the left; future unknown samples
+      // are mirrored from target schedule to the right (as prediction guide).
+      const pxPerSecond = chartW / HISTORY_SECONDS;
+      const halfW = chartW / 2;
+
+      // Prediction: draw target schedule for the next HISTORY_SECONDS/2 seconds
+      // ahead of 'now' as a thin preview line.
+      ctx.strokeStyle = 'rgba(130, 170, 220, 0.35)';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      {
+        // Replay scheduler timing into future without advancing actual state.
+        const cur = scheduler.current();
+        let segIdx = cur.segIdx;
+        let segElapsed = cur.elapsed;
+        const segs = cur.segments;
+        const futureSeconds = HISTORY_SECONDS / 2;
+        const steps = 200;
+        for (let i = 0; i <= steps; i++) {
+          const futureT = (i / steps) * futureSeconds;
+          // advance simulated scheduler by this delta
+          let se = segElapsed + futureT;
+          let sx = segIdx;
+          while (se >= segs[sx].d) {
+            se -= segs[sx].d;
+            sx = (sx + 1) % segs.length;
+          }
+          const s = segs[sx];
+          const t01 = se / s.d;
+          let amp;
+          if (s.p === 'inhale') amp = t01;
+          else if (s.p === 'exhale') amp = 1 - t01;
+          else {
+            const prev = segs[(sx - 1 + segs.length) % segs.length];
+            amp = prev.p === 'inhale' ? 1 : 0;
+          }
+          const x = cx + futureT * pxPerSecond;
+          const y = padTop + chartH * (1 - amp);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+
+      // Past target history (thin, solid)
+      ctx.strokeStyle = 'rgba(130, 170, 220, 0.7)';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      const nShown = Math.min(histCount, SAMPLES_PER_SEC * HISTORY_SECONDS / 2);
+      for (let i = 0; i < nShown; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        const secondsAgo = i / SAMPLES_PER_SEC;
+        const x = cx - secondsAgo * pxPerSecond;
+        const y = padTop + chartH * (1 - targetHist[idx]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Actual breath history (thick, colored by recent error)
+      const matchScore = computeMatch();
+      const badnessHue = 220 - matchScore * 120; // 220 (blue) → 100 (green)
+      ctx.strokeStyle = `hsl(${badnessHue}, 70%, 65%)`;
+      ctx.lineWidth = 3 * dpr;
+      ctx.beginPath();
+      for (let i = 0; i < nShown; i++) {
+        const idx = (writeIdx - 1 - i + N) % N;
+        const secondsAgo = i / SAMPLES_PER_SEC;
+        const x = cx - secondsAgo * pxPerSecond;
+        const y = padTop + chartH * (1 - actualHist[idx]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // "now" cursor
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(cx, padTop - 10 * dpr);
+      ctx.lineTo(cx, padTop + chartH + 10 * dpr);
+      ctx.stroke();
+
+      // current target vs actual markers at cursor
+      const yTarget = padTop + chartH * (1 - target);
+      const yActual = padTop + chartH * (1 - smoothedActual);
+      ctx.fillStyle = 'rgba(130, 170, 220, 1)';
+      ctx.beginPath(); ctx.arc(cx, yTarget, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `hsl(${badnessHue}, 70%, 70%)`;
+      ctx.beginPath(); ctx.arc(cx, yActual, 6 * dpr, 0, Math.PI * 2); ctx.fill();
+
+      // phase label bottom
+      const seg = scheduler.current();
+      ctx.fillStyle = '#fff';
+      ctx.globalAlpha = 0.8;
+      ctx.font = `${14 * dpr}px ui-monospace, Menlo, monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`${seg.phase.toUpperCase()}  ·  ${Math.ceil(seg.remaining)}s`,
+                   cx, padTop + chartH + 36 * dpr);
+      ctx.globalAlpha = 1;
+      // axis labels (inhale/exhale)
+      ctx.font = `${10 * dpr}px ui-monospace, Menlo, monospace`;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillText('inhale', padX - 8 * dpr, padTop + 5 * dpr);
+      ctx.fillText('exhale', padX - 8 * dpr, padTop + chartH);
+      ctx.textAlign = 'left';
+      ctx.fillText(`⟵ last ${HISTORY_SECONDS / 2}s`, padX, padTop + chartH + 36 * dpr);
+      ctx.textAlign = 'right';
+      ctx.fillText(`next ${HISTORY_SECONDS / 2}s ⟶`, padX + chartW, padTop + chartH + 36 * dpr);
+
+      scoreEl.textContent = (matchScore * 100).toFixed(0);
+
+      // status
+      const parts = [];
+      if (bridge.connected) {
+        parts.push(`hr ${bridge.hr}`);
+        parts.push(`cycles ${seg.cycles}`);
+        if (bridge.battery != null) parts.push(`${bridge.battery}%`);
+        if (bridge.flip) parts.push('flip');
+      } else {
+        parts.push('disconnected');
+      }
+      statusEl.textContent = parts.join(' · ');
+    }
+
+    tick();
+  </script>
+</body>
+</html>

@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HRV Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; font-family: 'SF Mono', Menlo, 'Courier New', monospace; }
+
+#grid {
+  display: grid;
+  width: 100%; height: 100%;
+  grid-template-columns: 30% 70%;
+  grid-template-rows: auto 1fr 1fr;
+  gap: 1px;
+  background: rgba(255,255,255,0.04);
+}
+
+.panel {
+  background: #0a0a0f;
+  position: relative;
+  overflow: hidden;
+}
+
+#pacer-bar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 16px;
+  min-height: 48px;
+}
+
+#pacer-bar .mode {
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  user-select: none;
+  letter-spacing: 0.5px;
+}
+#pacer-bar .mode:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+#pacer-bar .mode.active { color: #fff; background: rgba(255,255,255,0.12); }
+
+#zoom-row {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.25);
+  z-index: 10;
+}
+#zoom-row span {
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+#zoom-row span:hover { color: rgba(255,255,255,0.6); }
+#zoom-row span.active { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.06); }
+
+#poincare-panel { grid-column: 1; grid-row: 2; }
+#timeline-panel { grid-column: 2; grid-row: 2; }
+#ecg-panel { grid-column: 1; grid-row: 3; }
+#breath-wave-panel { grid-column: 2; grid-row: 3; }
+
+.panel canvas { display: block; width: 100%; height: 100%; }
+
+.panel-label {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 9px;
+  color: rgba(255,255,255,0.18);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#metrics-overlay {
+  position: fixed;
+  bottom: 8px;
+  right: 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.25);
+  text-align: right;
+  pointer-events: none;
+  z-index: 20;
+  font-family: 'SF Mono', Menlo, 'Courier New', monospace;
+}
+
+#pacer-circle-container {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 15;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+}
+
+#pacer-canvas {
+  width: 160px;
+  height: 160px;
+  pointer-events: none;
+}
+
+#status {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  color: rgba(255,255,255,0.2);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s;
+  z-index: 30;
+}
+#status.visible { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="grid">
+  <div id="pacer-bar" class="panel">
+    <div class="mode active" data-mode="off">off</div>
+    <div class="mode" data-mode="coherence">5.5s</div>
+    <div class="mode" data-mode="box4">box 4</div>
+    <div class="mode" data-mode="box6">box 6</div>
+    <div class="mode" data-mode="478">4-7-8</div>
+    <div class="mode" data-mode="resonance">6/min</div>
+  </div>
+  <div id="poincare-panel" class="panel">
+    <div class="panel-label">Poincare</div>
+    <canvas id="c-poincare"></canvas>
+  </div>
+  <div id="timeline-panel" class="panel">
+    <div class="panel-label">HR / RMSSD</div>
+    <div id="zoom-row">
+      <span data-z="30">30s</span>
+      <span data-z="60">1m</span>
+      <span data-z="120" class="active">2m</span>
+      <span data-z="300">5m</span>
+      <span data-z="600">10m</span>
+    </div>
+    <canvas id="c-timeline"></canvas>
+  </div>
+  <div id="ecg-panel" class="panel">
+    <div class="panel-label">ECG</div>
+    <canvas id="c-ecg"></canvas>
+  </div>
+  <div id="breath-wave-panel" class="panel">
+    <div class="panel-label">Breathing</div>
+    <canvas id="c-breath"></canvas>
+  </div>
+</div>
+
+<div id="pacer-circle-container">
+  <canvas id="pacer-canvas"></canvas>
+</div>
+
+<div id="metrics-overlay"></div>
+<div id="status">reconnecting...</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ── Helpers ──
+  const dpr = Math.min(devicePixelRatio, 2);
+  const BG = '#0a0a0f';
+
+  function initCanvas(id) {
+    const el = document.getElementById(id);
+    const ctx = el.getContext('2d', { alpha: false });
+    return { el, ctx };
+  }
+
+  function sizeCanvas(c) {
+    const r = c.el.parentElement ? c.el.parentElement.getBoundingClientRect() :
+              { width: c.el.clientWidth, height: c.el.clientHeight };
+    const w = r.width || c.el.clientWidth;
+    const h = r.height || c.el.clientHeight;
+    c.el.width = w * dpr;
+    c.el.height = h * dpr;
+    c.el.style.width = w + 'px';
+    c.el.style.height = h + 'px';
+    c.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.w = w;
+    c.h = h;
+  }
+
+  // Pacer canvas (overlay, not in grid)
+  const pacerC = { el: document.getElementById('pacer-canvas'), ctx: document.getElementById('pacer-canvas').getContext('2d', { alpha: true }) };
+  function sizePacer() {
+    const s = activePattern === 'off' ? 0 : 160;
+    pacerC.el.style.width = s + 'px';
+    pacerC.el.style.height = s + 'px';
+    pacerC.el.width = s * dpr;
+    pacerC.el.height = s * dpr;
+    pacerC.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pacerC.w = s;
+    pacerC.h = s;
+  }
+
+  const cPoincare = initCanvas('c-poincare');
+  const cTimeline = initCanvas('c-timeline');
+  const cEcg = initCanvas('c-ecg');
+  const cBreath = initCanvas('c-breath');
+  const allCanvases = [cPoincare, cTimeline, cEcg, cBreath];
+
+  function resizeAll() {
+    allCanvases.forEach(sizeCanvas);
+    sizePacer();
+  }
+  window.addEventListener('resize', resizeAll);
+  // Initial size after layout settles
+  requestAnimationFrame(() => { resizeAll(); requestAnimationFrame(resizeAll); });
+
+  const metricsEl = document.getElementById('metrics-overlay');
+  const statusEl = document.getElementById('status');
+
+  // ── Breathing patterns ──
+  const PATTERNS = {
+    off: null,
+    coherence: [{p:'in',d:5.5},{p:'out',d:5.5}],
+    box4: [{p:'in',d:4},{p:'hold',d:4},{p:'out',d:4},{p:'hold_out',d:4}],
+    box6: [{p:'in',d:6},{p:'hold',d:6},{p:'out',d:6},{p:'hold_out',d:6}],
+    '478': [{p:'in',d:4},{p:'hold',d:7},{p:'out',d:8}],
+    resonance: [{p:'in',d:5},{p:'out',d:5}],
+  };
+  let activePattern = 'off';
+  let patternStart = 0;
+  let breathProgress = 0.5;
+  let breathPhase = '';
+  let breathCountdown = 0;
+
+  document.querySelectorAll('.mode').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.mode').forEach(m => m.classList.remove('active'));
+      el.classList.add('active');
+      activePattern = el.dataset.mode;
+      patternStart = performance.now() / 1000;
+      sizePacer();
+    });
+  });
+
+  // ── Zoom ──
+  let zoomSeconds = 120;
+  document.querySelectorAll('#zoom-row span').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('#zoom-row span').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+      zoomSeconds = parseInt(el.dataset.z);
+    });
+  });
+
+  // ── Data buffers ──
+  const RR_MAX = 200;
+  const rrIntervals = [];            // raw RR values
+  const rrTimestamps = [];           // timestamps for each RR
+  const poincarePoints = [];         // {x, y, t} max 200
+  const POINCARE_MAX = 200;
+
+  const rmssdHistory = [];           // {ts, rmssd} max 3600
+  const RMSSD_MAX = 3600;
+  const hrHistory = [];              // {ts, hr} max 3600
+  const HR_MAX = 3600;
+
+  const ecgBuffer = [];              // raw samples, max 400
+  const ECG_MAX = 400;
+
+  const accZBuffer = [];             // Z-axis samples, max 500
+  const ACC_MAX = 500;
+
+  let currentRMSSD = 0;
+  let currentSDNN = 0;
+  let currentHR = 0;
+  let currentBreathRate = 0;
+  let coherenceScore = 0;
+  let startTs = 0;
+
+  // ── HRV computation ──
+  function computeRMSSD(arr) {
+    if (arr.length < 4) return 0;
+    let sum = 0;
+    for (let i = 1; i < arr.length; i++) {
+      const d = arr[i] - arr[i - 1];
+      sum += d * d;
+    }
+    return Math.sqrt(sum / (arr.length - 1));
+  }
+
+  function computeSDNN(arr) {
+    if (arr.length < 4) return 0;
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    let sum = 0;
+    for (const v of arr) { const d = v - mean; sum += d * d; }
+    return Math.sqrt(sum / arr.length);
+  }
+
+  function computeCoherence(arr) {
+    // Simple coherence: ratio of power in 0.04-0.26 Hz band vs total
+    if (arr.length < 10) return 0;
+    // Use last 60 RR intervals
+    const recent = arr.slice(-60);
+    const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const centered = recent.map(v => v - mean);
+    // Very rough spectral peak detection via autocorrelation
+    let maxCorr = 0;
+    for (let lag = 3; lag < Math.min(20, centered.length); lag++) {
+      let corr = 0;
+      for (let i = 0; i < centered.length - lag; i++) {
+        corr += centered[i] * centered[i + lag];
+      }
+      corr /= (centered.length - lag);
+      if (corr > maxCorr) maxCorr = corr;
+    }
+    const variance = centered.reduce((s, v) => s + v * v, 0) / centered.length;
+    if (variance < 1) return 0;
+    return Math.min(10, Math.max(0, (maxCorr / variance) * 10));
+  }
+
+  function estimateBreathRate(accZ) {
+    if (accZ.length < 100) return 0;
+    // Simple zero-crossing rate on smoothed Z-axis
+    const win = 10;
+    const smoothed = [];
+    for (let i = 0; i < accZ.length; i++) {
+      let s = 0, c = 0;
+      for (let j = Math.max(0, i - win); j <= Math.min(accZ.length - 1, i + win); j++) {
+        s += accZ[j]; c++;
+      }
+      smoothed.push(s / c);
+    }
+    const mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
+    let crossings = 0;
+    for (let i = 1; i < smoothed.length; i++) {
+      if ((smoothed[i - 1] - mean) * (smoothed[i] - mean) < 0) crossings++;
+    }
+    // At 50Hz, buffer duration = length / 50
+    const duration = accZ.length / 50;
+    const cyclesPerSec = (crossings / 2) / duration;
+    return cyclesPerSec * 60; // breaths per minute
+  }
+
+  // ── Color helpers ──
+  // stress 0 = relaxed (warm amber), 1 = stressed (cool blue-purple)
+  function stressFromRMSSD(rmssd) {
+    if (rmssd <= 0) return 0.5;
+    return Math.max(0, Math.min(1, 1 - (rmssd - 15) / 50));
+  }
+
+  function lerpColor(stress) {
+    // Warm amber [255,180,60] -> Cool blue-purple [100,80,220]
+    const r = 255 - stress * 155;
+    const g = 180 - stress * 100;
+    const b = 60 + stress * 160;
+    return [r | 0, g | 0, b | 0];
+  }
+
+  // ── WebSocket ──
+  let ws = null;
+  function connect() {
+    ws = new WebSocket('ws://localhost:8765');
+    ws.onopen = () => {
+      statusEl.classList.remove('visible');
+      if (!startTs) startTs = performance.now() / 1000;
+    };
+    ws.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const now_s = performance.now() / 1000 - startTs;
+
+        if (d.type === 'hr') {
+          if (d.bpm) {
+            currentHR = d.bpm;
+            hrHistory.push({ ts: now_s, hr: d.bpm });
+            if (hrHistory.length > HR_MAX) hrHistory.shift();
+          }
+          if (d.rr) {
+            for (const rr of d.rr) {
+              if (rr < 200 || rr > 2000) continue;
+              rrIntervals.push(rr);
+              rrTimestamps.push(now_s);
+              if (rrIntervals.length > RR_MAX) { rrIntervals.shift(); rrTimestamps.shift(); }
+
+              // Poincare
+              if (rrIntervals.length >= 2) {
+                const n = rrIntervals.length;
+                poincarePoints.push({
+                  x: rrIntervals[n - 2],
+                  y: rrIntervals[n - 1],
+                  t: now_s
+                });
+                if (poincarePoints.length > POINCARE_MAX) poincarePoints.shift();
+              }
+            }
+
+            if (rrIntervals.length >= 4) {
+              currentRMSSD = computeRMSSD(rrIntervals.slice(-30));
+              currentSDNN = computeSDNN(rrIntervals.slice(-30));
+              coherenceScore = computeCoherence(rrIntervals);
+              rmssdHistory.push({ ts: now_s, rmssd: currentRMSSD });
+              if (rmssdHistory.length > RMSSD_MAX) rmssdHistory.shift();
+            }
+          }
+        }
+
+        if (d.type === 'ecg' && d.samples) {
+          for (const s of d.samples) {
+            ecgBuffer.push(s);
+            if (ecgBuffer.length > ECG_MAX) ecgBuffer.shift();
+          }
+        }
+
+        if (d.type === 'acc' && d.samples) {
+          for (const s of d.samples) {
+            accZBuffer.push(s[2]); // Z-axis
+            if (accZBuffer.length > ACC_MAX) accZBuffer.shift();
+          }
+          currentBreathRate = estimateBreathRate(accZBuffer);
+        }
+      } catch (err) { /* ignore parse errors */ }
+    };
+    ws.onclose = () => { statusEl.classList.add('visible'); setTimeout(connect, 2000); };
+    ws.onerror = () => ws.close();
+  }
+  connect();
+
+  // ── Breathing update ──
+  function updateBreath(now_s) {
+    const pat = PATTERNS[activePattern];
+    if (!pat) { breathProgress = 0.5; breathPhase = ''; breathCountdown = 0; return; }
+    const total = pat.reduce((s, p) => s + p.d, 0);
+    const elapsed = ((now_s - patternStart) % total + total) % total;
+    let acc = 0;
+    let step = pat[0], stepElapsed = 0;
+    for (const s of pat) {
+      if (elapsed < acc + s.d) { step = s; stepElapsed = elapsed - acc; break; }
+      acc += s.d;
+    }
+    const frac = stepElapsed / step.d;
+    breathPhase = step.p;
+    breathCountdown = Math.ceil(step.d - stepElapsed);
+    switch (step.p) {
+      case 'in': breathProgress = frac; break;
+      case 'out': breathProgress = 1 - frac; break;
+      case 'hold': breathProgress = 1; break;
+      case 'hold_out': breathProgress = 0; break;
+    }
+  }
+
+  function getBreathAt(ts) {
+    const pat = PATTERNS[activePattern];
+    if (!pat) return 0.5;
+    const total = pat.reduce((s, p) => s + p.d, 0);
+    const elapsed = ((ts - patternStart) % total + total) % total;
+    let acc = 0;
+    for (const s of pat) {
+      if (elapsed < acc + s.d) {
+        const f = (elapsed - acc) / s.d;
+        if (s.p === 'in') return f;
+        if (s.p === 'out') return 1 - f;
+        if (s.p === 'hold') return 1;
+        return 0;
+      }
+      acc += s.d;
+    }
+    return 0.5;
+  }
+
+  // ── Renderers ──
+
+  function drawPacer(now_s) {
+    if (activePattern === 'off') return;
+    const c = pacerC;
+    if (!c.w) return;
+    const ctx = c.ctx;
+    ctx.clearRect(0, 0, c.w, c.h);
+
+    const cx = c.w / 2;
+    const cy = c.h / 2;
+    const maxR = c.w * 0.42;
+    const minR = maxR * 0.2;
+    const r = minR + (maxR - minR) * breathProgress;
+
+    const stress = stressFromRMSSD(currentRMSSD);
+    const [cr, cg, cb] = lerpColor(stress);
+
+    // Outer glow ring
+    const alpha = 0.08 + breathProgress * 0.18;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Inner fill
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.03 + breathProgress * 0.06})`;
+    ctx.fill();
+
+    // Countdown text
+    const labels = { in: 'IN', out: 'OUT', hold: 'HOLD', hold_out: 'HOLD' };
+    ctx.fillStyle = `rgba(255,255,255,${0.3 + breathProgress * 0.2})`;
+    ctx.font = '22px "SF Mono", Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(breathCountdown, cx, cy - 2);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '8px "SF Mono", Menlo, monospace';
+    ctx.fillText(labels[breathPhase] || '', cx, cy + 16);
+  }
+
+  function drawPoincare(now_s) {
+    const c = cPoincare;
+    const ctx = c.ctx;
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, c.w, c.h);
+
+    if (poincarePoints.length < 2) return;
+
+    const pad = 30;
+    const plotW = c.w - pad * 2;
+    const plotH = c.h - pad * 2;
+
+    // Auto-range
+    let minRR = Infinity, maxRR = -Infinity;
+    for (const p of poincarePoints) {
+      minRR = Math.min(minRR, p.x, p.y);
+      maxRR = Math.max(maxRR, p.x, p.y);
+    }
+    const margin = Math.max(30, (maxRR - minRR) * 0.15);
+    minRR -= margin;
+    maxRR += margin;
+    if (maxRR - minRR < 100) { const mid = (maxRR + minRR) / 2; minRR = mid - 50; maxRR = mid + 50; }
+
+    function toX(v) { return pad + ((v - minRR) / (maxRR - minRR)) * plotW; }
+    function toY(v) { return pad + plotH - ((v - minRR) / (maxRR - minRR)) * plotH; }
+
+    // Identity line
+    ctx.beginPath();
+    ctx.moveTo(toX(minRR), toY(minRR));
+    ctx.lineTo(toX(maxRR), toY(maxRR));
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // Grid labels
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    const step = Math.max(50, Math.round((maxRR - minRR) / 5 / 50) * 50);
+    for (let v = Math.ceil(minRR / step) * step; v <= maxRR; v += step) {
+      ctx.fillText(v, toX(v), c.h - pad + 14);
+      // Y-axis
+      ctx.textAlign = 'right';
+      ctx.fillText(v, pad - 6, toY(v) + 3);
+      ctx.textAlign = 'center';
+    }
+
+    // Axis labels
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('RR(n) ms', c.w / 2, c.h - 4);
+
+    // Dots
+    const oldestT = poincarePoints[0].t;
+    const newestT = poincarePoints[poincarePoints.length - 1].t;
+    const timeRange = Math.max(1, newestT - oldestT);
+
+    for (const p of poincarePoints) {
+      const age = (p.t - oldestT) / timeRange; // 0 = oldest, 1 = newest
+      const stress = stressFromRMSSD(currentRMSSD);
+      const [cr, cg, cb] = lerpColor(stress);
+      const alpha = 0.08 + age * 0.72;
+      const radius = 1.5 + age * 2;
+
+      ctx.beginPath();
+      ctx.arc(toX(p.x), toY(p.y), radius, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha.toFixed(2)})`;
+      ctx.fill();
+    }
+  }
+
+  function drawTimeline(now_s) {
+    const c = cTimeline;
+    const ctx = c.ctx;
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, c.w, c.h);
+
+    const pad = { top: 24, right: 45, bottom: 20, left: 45 };
+    const plotW = c.w - pad.left - pad.right;
+    const plotH = c.h - pad.top - pad.bottom;
+
+    if (rmssdHistory.length < 2 && hrHistory.length < 2) return;
+
+    const tNow = Math.max(
+      rmssdHistory.length ? rmssdHistory[rmssdHistory.length - 1].ts : 0,
+      hrHistory.length ? hrHistory[hrHistory.length - 1].ts : 0
+    );
+    const tStart = tNow - zoomSeconds;
+
+    function toX(ts) { return pad.left + ((ts - tStart) / zoomSeconds) * plotW; }
+
+    // HR axis (left): 40-200
+    const hrMin = 40, hrMax = 200;
+    function toYhr(hr) { return pad.top + plotH - ((Math.min(hrMax, Math.max(hrMin, hr)) - hrMin) / (hrMax - hrMin)) * plotH; }
+
+    // RMSSD axis (right): 0-120
+    const rmssdMin = 0, rmssdMax = 120;
+    function toYrmssd(v) { return pad.top + plotH - ((Math.min(rmssdMax, Math.max(rmssdMin, v)) - rmssdMin) / (rmssdMax - rmssdMin)) * plotH; }
+
+    // Grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 0.5;
+    for (let hr = 60; hr <= 180; hr += 30) {
+      const y = toYhr(hr);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + plotW, y); ctx.stroke();
+    }
+
+    // Axis labels
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(220,80,80,0.25)';
+    for (let hr = 60; hr <= 180; hr += 60) {
+      ctx.fillText(hr, pad.left - 4, toYhr(hr) + 3);
+    }
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(80,180,220,0.25)';
+    for (let v = 20; v <= 100; v += 40) {
+      ctx.fillText(v, pad.left + plotW + 4, toYrmssd(v) + 3);
+    }
+
+    // Axis titles
+    ctx.save();
+    ctx.fillStyle = 'rgba(220,80,80,0.15)';
+    ctx.font = '8px monospace';
+    ctx.translate(8, pad.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillText('HR bpm', 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(80,180,220,0.15)';
+    ctx.font = '8px monospace';
+    ctx.translate(c.w - 6, pad.top + plotH / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillText('RMSSD ms', 0, 0);
+    ctx.restore();
+
+    // Breathing guide wave (faint)
+    if (PATTERNS[activePattern]) {
+      ctx.beginPath();
+      let first = true;
+      for (let px = 0; px <= plotW; px += 2) {
+        const ts = tStart + (px / plotW) * zoomSeconds;
+        const bp = getBreathAt(ts);
+        const targetRMSSD = 35 + bp * 40;
+        const y = toYrmssd(targetRMSSD);
+        if (first) { ctx.moveTo(pad.left + px, y); first = false; }
+        else ctx.lineTo(pad.left + px, y);
+      }
+      ctx.strokeStyle = 'rgba(255,200,100,0.07)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // RMSSD filled area
+    if (rmssdHistory.length >= 2) {
+      ctx.beginPath();
+      let started = false;
+      let lastX = pad.left;
+      for (const pt of rmssdHistory) {
+        if (pt.ts < tStart) continue;
+        const x = toX(pt.ts);
+        const y = toYrmssd(pt.rmssd);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+        lastX = x;
+      }
+      if (started) {
+        // Close for fill
+        const firstVisible = rmssdHistory.find(p => p.ts >= tStart);
+        ctx.lineTo(lastX, pad.top + plotH);
+        ctx.lineTo(toX(firstVisible ? firstVisible.ts : tStart), pad.top + plotH);
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+        grad.addColorStop(0, 'rgba(80,180,220,0.12)');
+        grad.addColorStop(1, 'rgba(80,180,220,0.01)');
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // RMSSD line
+        ctx.beginPath();
+        started = false;
+        for (const pt of rmssdHistory) {
+          if (pt.ts < tStart) continue;
+          const x = toX(pt.ts);
+          const y = toYrmssd(pt.rmssd);
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = 'rgba(80,180,220,0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+      }
+    }
+
+    // HR line
+    if (hrHistory.length >= 2) {
+      ctx.beginPath();
+      let started = false;
+      for (const pt of hrHistory) {
+        if (pt.ts < tStart) continue;
+        const x = toX(pt.ts);
+        const y = toYhr(pt.hr);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(220,80,80,0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // Current marker
+      if (hrHistory.length > 0) {
+        const last = hrHistory[hrHistory.length - 1];
+        if (last.ts >= tStart) {
+          ctx.beginPath();
+          ctx.arc(toX(last.ts), toYhr(last.hr), 3, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(220,80,80,0.8)';
+          ctx.fill();
+        }
+      }
+    }
+
+    // RMSSD current marker
+    if (rmssdHistory.length > 0) {
+      const last = rmssdHistory[rmssdHistory.length - 1];
+      if (last.ts >= tStart) {
+        ctx.beginPath();
+        ctx.arc(toX(last.ts), toYrmssd(last.rmssd), 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(80,180,220,0.8)';
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawEcg() {
+    const c = cEcg;
+    const ctx = c.ctx;
+    ctx.fillStyle = '#050808';
+    ctx.fillRect(0, 0, c.w, c.h);
+
+    if (ecgBuffer.length < 10) {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('awaiting ECG...', c.w / 2, c.h / 2);
+      return;
+    }
+
+    const pad = { top: 20, right: 10, bottom: 10, left: 10 };
+    const plotW = c.w - pad.left - pad.right;
+    const plotH = c.h - pad.top - pad.bottom;
+
+    // ~3 seconds at 130Hz = 390 samples
+    const visible = ecgBuffer.slice(-390);
+
+    // Auto-range
+    let minV = Infinity, maxV = -Infinity;
+    for (const v of visible) {
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const range = Math.max(maxV - minV, 50);
+    const mid = (maxV + minV) / 2;
+
+    function toX(i) { return pad.left + (i / (visible.length - 1)) * plotW; }
+    function toY(v) { return pad.top + plotH / 2 - ((v - mid) / range) * plotH * 0.85; }
+
+    // Faint grid
+    ctx.strokeStyle = 'rgba(0,180,80,0.06)';
+    ctx.lineWidth = 0.5;
+    for (let y = pad.top; y <= pad.top + plotH; y += plotH / 4) {
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + plotW, y); ctx.stroke();
+    }
+    const gridStep = visible.length / 6;
+    for (let i = 0; i < visible.length; i += gridStep) {
+      const x = toX(i);
+      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + plotH); ctx.stroke();
+    }
+
+    // ECG waveform
+    ctx.beginPath();
+    for (let i = 0; i < visible.length; i++) {
+      const x = toX(i);
+      const y = toY(visible[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(0,220,80,0.75)';
+    ctx.lineWidth = 1.2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Scanline glow at the end
+    const headX = toX(visible.length - 1);
+    const grad = ctx.createLinearGradient(headX - 30, 0, headX, 0);
+    grad.addColorStop(0, 'rgba(0,220,80,0)');
+    grad.addColorStop(1, 'rgba(0,220,80,0.15)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(headX - 30, pad.top, 30, plotH);
+  }
+
+  function drawBreathWave(now_s) {
+    const c = cBreath;
+    const ctx = c.ctx;
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, c.w, c.h);
+
+    if (accZBuffer.length < 50) {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('awaiting ACC...', c.w / 2, c.h / 2);
+      return;
+    }
+
+    const pad = { top: 20, right: 10, bottom: 16, left: 10 };
+    const plotW = c.w - pad.left - pad.right;
+    const plotH = c.h - pad.top - pad.bottom;
+
+    // Smooth Z-axis heavily for breathing wave
+    const win = 15;
+    const smoothed = [];
+    for (let i = 0; i < accZBuffer.length; i++) {
+      let s = 0, count = 0;
+      for (let j = Math.max(0, i - win); j <= Math.min(accZBuffer.length - 1, i + win); j++) {
+        s += accZBuffer[j]; count++;
+      }
+      smoothed.push(s / count);
+    }
+
+    // Show last ~250 samples (~5 seconds at 50Hz)
+    const visible = smoothed.slice(-250);
+
+    let minV = Infinity, maxV = -Infinity;
+    for (const v of visible) {
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const range = Math.max(maxV - minV, 10);
+    const mid = (maxV + minV) / 2;
+
+    function toX(i) { return pad.left + (i / (visible.length - 1)) * plotW; }
+    function toY(v) { return pad.top + plotH / 2 - ((v - mid) / range) * plotH * 0.8; }
+
+    // Waveform
+    ctx.beginPath();
+    for (let i = 0; i < visible.length; i++) {
+      const x = toX(i);
+      const y = toY(visible[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+
+    const stress = stressFromRMSSD(currentRMSSD);
+    const [cr, cg, cb] = lerpColor(stress);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.5)`;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Fill below
+    if (visible.length > 1) {
+      ctx.lineTo(toX(visible.length - 1), pad.top + plotH);
+      ctx.lineTo(toX(0), pad.top + plotH);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},0.08)`);
+      grad.addColorStop(1, `rgba(${cr},${cg},${cb},0.01)`);
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+
+    // Breath rate label
+    if (currentBreathRate > 3 && currentBreathRate < 40) {
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(currentBreathRate.toFixed(1) + ' br/min', c.w - 10, c.h - 4);
+    }
+  }
+
+  // ── Metrics overlay ──
+  function updateMetrics() {
+    const lines = [];
+    lines.push(`RMSSD  ${currentRMSSD > 0 ? currentRMSSD.toFixed(1) : '--'} ms`);
+    lines.push(`HR     ${currentHR || '--'} bpm`);
+    lines.push(`SDNN   ${currentSDNN > 0 ? currentSDNN.toFixed(1) : '--'} ms`);
+    if (currentBreathRate > 3 && currentBreathRate < 40) {
+      lines.push(`RESP   ${currentBreathRate.toFixed(1)} /min`);
+    }
+    lines.push(`COH    ${coherenceScore.toFixed(1)}`);
+    metricsEl.textContent = lines.join('\n');
+    metricsEl.style.whiteSpace = 'pre';
+  }
+
+  // ── Main loop ──
+  let lastMetricsUpdate = 0;
+
+  function frame(time) {
+    const now_s = time / 1000;
+    updateBreath(now_s);
+
+    drawPacer(now_s);
+    drawPoincare(now_s);
+    drawTimeline(now_s);
+    drawEcg();
+    drawBreathWave(now_s);
+
+    // Metrics at ~4fps to avoid layout thrash
+    if (time - lastMetricsUpdate > 250) {
+      updateMetrics();
+      lastMetricsUpdate = time;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

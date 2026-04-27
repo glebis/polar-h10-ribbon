@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+.enzyme/
+.enzyme-embeddings/
