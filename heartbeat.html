@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>♥</title>
+<style>
+* { margin:0; padding:0; }
+html, body { width:100%; height:100%; overflow:hidden; background:#050505; cursor:none; }
+canvas { display:block; width:100%; height:100%; }
+#info {
+  position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+  font:13px/1.4 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.15);
+  text-align:center; pointer-events:none; user-select:none;
+}
+#bpm-display {
+  position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+  font:120px/1 'SF Mono',Menlo,monospace; color:rgba(255,40,40,0.08);
+  pointer-events:none; user-select:none; font-variant-numeric:tabular-nums;
+  transition: color 0.1s;
+}
+#status {
+  position:fixed; top:12px; left:50%; transform:translateX(-50%);
+  font:11px 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.12);
+  pointer-events:none; opacity:0; transition:opacity 0.5s;
+}
+#status.visible { opacity:1; }
+#controls {
+  position:fixed; top:12px; right:16px; font:10px 'SF Mono',Menlo,monospace;
+  color:rgba(255,255,255,0.2); pointer-events:none;
+}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="bpm-display">--</div>
+<div id="info"></div>
+<div id="status">connecting...</div>
+<div id="controls">A=audio S=style F=fullscreen</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', {alpha:false});
+  const bpmEl = document.getElementById('bpm-display');
+  const infoEl = document.getElementById('info');
+  const statusEl = document.getElementById('status');
+
+  let W, H;
+  const dpr = Math.min(devicePixelRatio, 2);
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W+'px'; canvas.style.height = H+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // State
+  let currentHR = 0;
+  let currentRMSSD = 0;
+  let lastBeatTime = 0;
+  let beatPhase = 1; // 0=just beat, 1=resting
+  let expectedInterval = 1;
+  let rrHistory = [];
+  const RR_MAX = 30;
+
+  // Visual style
+  let style = 0; // 0=pulse, 1=ring, 2=particles
+  const STYLES = ['pulse', 'ring', 'particles'];
+
+  // Particle system
+  const particles = [];
+  const MAX_PARTICLES = 800;
+
+  function spawnBeat(now) {
+    // Spawn a burst of particles from center on each heartbeat
+    const cx = W/2, cy = H/2;
+    const count = 30 + Math.floor(currentHR / 5); // more particles at higher HR
+    const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
+
+    for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 200 + hrStress * 150;
+      const life = 2 + Math.random() * 4 + (1 - hrStress) * 3; // calm = longer life
+      const size = 2 + Math.random() * 6;
+      particles.push({
+        x: cx + (Math.random() - 0.5) * 20,
+        y: cy + (Math.random() - 0.5) * 20,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 30, // slight upward bias
+        size,
+        maxSize: size,
+        life,
+        maxLife: life,
+        born: now,
+        // Per-particle color variation
+        hue: Math.random() * 0.05, // slight orange shift
+        drag: 0.97 + Math.random() * 0.025, // organic — each particle decelerates differently
+        gravity: 15 + Math.random() * 25, // gentle downward pull
+        wobble: (Math.random() - 0.5) * 2, // lateral drift
+      });
+    }
+  }
+
+  function updateParticles(dt, now) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const age = now - p.born;
+      if (age > p.maxLife) {
+        particles.splice(i, 1);
+        continue;
+      }
+
+      // Physics
+      p.vy += p.gravity * dt; // gravity
+      p.vx += p.wobble * dt * 30; // lateral wobble
+      p.vx *= p.drag;
+      p.vy *= p.drag;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+
+      // Soft floor bounce
+      if (p.y > H - 10) {
+        p.y = H - 10;
+        p.vy *= -0.3;
+        p.vx *= 0.8;
+      }
+      // Side walls
+      if (p.x < 0) { p.x = 0; p.vx *= -0.5; }
+      if (p.x > W) { p.x = W; p.vx *= -0.5; }
+
+      // Life fraction (0=born, 1=dead)
+      p.life = p.maxLife - age;
+    }
+  }
+
+  function drawParticles(hrStress) {
+    for (const p of particles) {
+      const lifeFrac = p.life / p.maxLife; // 1=fresh, 0=dying
+
+      // Ease out: particles fade and shrink gently at end of life
+      // Using cubic ease-out for organic feel
+      const easedLife = 1 - Math.pow(1 - lifeFrac, 3);
+      const alpha = easedLife * (0.3 + hrStress * 0.5);
+      const size = p.maxSize * (0.3 + easedLife * 0.7);
+
+      // Color: warm red, shifts toward orange/ember as particle ages
+      const r = 200 + (1 - lifeFrac) * 55; // brighter as it ages (ember)
+      const g = 30 + (1 - lifeFrac) * 50 + p.hue * 400;
+      const b = 15 + (1 - lifeFrac) * 15;
+
+      // Glow for larger particles
+      if (size > 3 && alpha > 0.1) {
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 3);
+        grad.addColorStop(0, `rgba(${r|0},${g|0},${b|0},${alpha * 0.3})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Core dot
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r|0},${g|0},${b|0},${alpha})`;
+      ctx.fill();
+    }
+  }
+
+  // Audio
+  let audioCtx = null;
+  let audioEnabled = false;
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  // Audio mode
+  let audioMode = 0;
+  const AUDIO_MODES = ['off', 'heartbeat', 'tonal', 'musical', 'all'];
+
+  function playHeartSound() {
+    if (!audioCtx || audioMode === 0) return;
+    const t = audioCtx.currentTime;
+    const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
+    // Coherence: how regular are the RR intervals? Low variance = high coherence
+    let coherence = 0.5;
+    if (rrHistory.length >= 4) {
+      const mean = rrHistory.reduce((a,b)=>a+b,0) / rrHistory.length;
+      const variance = rrHistory.reduce((a,b)=>a+(b-mean)**2,0) / rrHistory.length;
+      const cv = Math.sqrt(variance) / mean;
+      coherence = Math.max(0, Math.min(1, 1 - cv * 5)); // 0=chaotic, 1=metronomic
+    }
+
+    if (audioMode === 1 || audioMode === 4) {
+      // LUB-DUB: thump sound
+      for (const [delay, freq, q, vol, dur] of [[0, 60, 8, 0.6, 0.1], [0.12, 90, 6, 0.3, 0.08]]) {
+        const len = audioCtx.sampleRate * dur;
+        const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = (Math.random()*2-1) * Math.exp(-i/(len*0.15));
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        const filt = audioCtx.createBiquadFilter();
+        filt.type = 'lowpass'; filt.frequency.value = freq; filt.Q.value = q;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(vol, t+delay);
+        gain.gain.exponentialRampToValueAtTime(0.001, t+delay+dur+0.05);
+        src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
+        src.start(t+delay); src.stop(t+delay+dur+0.1);
+      }
+    }
+
+    if (audioMode === 2 || audioMode === 4) {
+      // TONAL: pitch reflects RMSSD, detune reflects coherence
+      // High RMSSD = warm low tone (peaceful), low RMSSD = higher tense tone
+      const basePitch = 220 - Math.min(currentRMSSD, 80) * 1.5; // 220Hz at RMSSD 0, 100Hz at RMSSD 80
+      const detune = (1 - coherence) * 30; // incoherent = out of tune
+
+      const osc = audioCtx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = basePitch + (Math.random() - 0.5) * detune;
+
+      // Add a fifth above when coherent (consonant harmony)
+      const osc2 = audioCtx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.value = basePitch * 1.5 + (Math.random() - 0.5) * detune * 2;
+
+      const gain = audioCtx.createGain();
+      const vol = 0.08 + coherence * 0.07; // louder when coherent
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8 + coherence * 1.2); // longer sustain when coherent
+
+      const gain2 = audioCtx.createGain();
+      gain2.gain.setValueAtTime(coherence * 0.05, t); // harmony only audible when coherent
+      gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+
+      // Filter: muffled when stressed, bright when calm
+      const filt = audioCtx.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 400 + (1 - hrStress) * 2000;
+      filt.Q.value = 1;
+
+      osc.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
+      osc2.connect(gain2); gain2.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 2);
+      osc2.start(t); osc2.stop(t + 1);
+    }
+
+    if (audioMode === 3 || audioMode === 4) {
+      // MUSICAL: pentatonic notes chosen by RR interval, chord quality by coherence
+      // Map RR interval to pentatonic scale degree
+      const lastRR = rrHistory.length > 0 ? rrHistory[rrHistory.length-1] : 800;
+      const pentatonic = [1, 9/8, 5/4, 3/2, 5/3]; // major pentatonic ratios
+      const degree = Math.floor((lastRR % 500) / 100) % 5;
+      const rootHz = 130.81; // C3
+      const noteHz = rootHz * pentatonic[degree];
+
+      // Root note
+      const osc = audioCtx.createOscillator();
+      osc.type = coherence > 0.6 ? 'sine' : 'sawtooth'; // clean when coherent, gritty when not
+      osc.frequency.value = noteHz;
+
+      // Octave above (soft)
+      const osc2 = audioCtx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.value = noteHz * 2;
+
+      // Third (major when coherent, minor when stressed)
+      const osc3 = audioCtx.createOscillator();
+      osc3.type = 'sine';
+      const thirdRatio = coherence > 0.5 ? 5/4 : 6/5; // major third vs minor third
+      osc3.frequency.value = noteHz * thirdRatio;
+
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.setValueAtTime(0.06, t);
+      masterGain.gain.exponentialRampToValueAtTime(0.001, t + 1.5 + coherence * 2);
+
+      const gain2 = audioCtx.createGain();
+      gain2.gain.value = 0.03;
+      const gain3 = audioCtx.createGain();
+      gain3.gain.value = coherence * 0.04; // chord only when coherent
+
+      // Reverb-like: delayed quiet copy
+      const delay = audioCtx.createDelay();
+      delay.delayTime.value = 0.15;
+      const delayGain = audioCtx.createGain();
+      delayGain.gain.value = 0.15;
+
+      osc.connect(masterGain);
+      osc2.connect(gain2); gain2.connect(masterGain);
+      osc3.connect(gain3); gain3.connect(masterGain);
+      masterGain.connect(audioCtx.destination);
+      masterGain.connect(delay); delay.connect(delayGain); delayGain.connect(audioCtx.destination);
+
+      osc.start(t); osc.stop(t + 3);
+      osc2.start(t + 0.02); osc2.stop(t + 2);
+      osc3.start(t + 0.05); osc3.stop(t + 2.5);
+    }
+  }
+
+  // WebSocket
+  let ws = null;
+  function connect() {
+    ws = new WebSocket('ws://localhost:8765');
+    ws.onopen = () => { statusEl.classList.remove('visible'); };
+    ws.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'hr') {
+          if (d.bpm) currentHR = d.bpm;
+          if (d.rr) for (const rr of d.rr) {
+            if (rr < 200 || rr > 2000) continue;
+            rrHistory.push(rr);
+            if (rrHistory.length > RR_MAX) rrHistory.shift();
+            // Each RR = one heartbeat
+            lastBeatTime = performance.now() / 1000;
+            beatPhase = 0;
+            expectedInterval = rr / 1000;
+            playHeartSound();
+            spawnBeat(lastBeatTime);
+          }
+          // Compute RMSSD
+          if (rrHistory.length >= 4) {
+            let sum = 0;
+            for (let i = 1; i < rrHistory.length; i++) {
+              const d = rrHistory[i] - rrHistory[i-1];
+              sum += d * d;
+            }
+            currentRMSSD = Math.sqrt(sum / (rrHistory.length - 1));
+          }
+        }
+      } catch(err){}
+    };
+    ws.onclose = () => { statusEl.classList.add('visible'); setTimeout(connect, 2000); };
+    ws.onerror = () => ws.close();
+  }
+  connect();
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    const k = e.key.toLowerCase();
+    if (k === 'a') { audioMode = (audioMode + 1) % AUDIO_MODES.length; }
+    else if (k === 's') { style = (style + 1) % STYLES.length; }
+    else if (k === 'f') { document.documentElement.requestFullscreen().catch(()=>{}); }
+  });
+  document.addEventListener('click', () => { initAudio(); if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); });
+
+  // Color from HRV
+  function getColor(stress, alpha) {
+    // stress 0 = deep red, 1 = bright red/white (alarm)
+    const r = 180 + stress * 75;
+    const g = 20 + stress * 30;
+    const b = 20 + stress * 20;
+    return `rgba(${r|0},${g|0},${b|0},${alpha})`;
+  }
+
+  // Render
+  function render(time) {
+    const now = time / 1000;
+    const elapsed = now - lastBeatTime;
+    beatPhase = Math.min(1, elapsed / expectedInterval);
+
+    // Beat envelope: sharp attack, smooth decay
+    let beat;
+    if (beatPhase < 0.08) {
+      beat = Math.sin(beatPhase / 0.08 * Math.PI / 2);
+    } else if (beatPhase < 0.35) {
+      beat = Math.cos((beatPhase - 0.08) / 0.27 * Math.PI / 2);
+    } else {
+      beat = Math.max(0, 0.08 * Math.exp(-(beatPhase - 0.35) * 4));
+    }
+
+    // Stress level: higher HR = more intense
+    const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
+    // High HR alarm: start blinking above 120
+    const alarm = currentHR > 120 ? Math.sin(now * currentHR / 10) * 0.5 + 0.5 : 0;
+
+    // Background flash on beat
+    const bgFlash = beat * (0.03 + hrStress * 0.08 + alarm * 0.15);
+    ctx.fillStyle = `rgb(${(bgFlash*200)|0},${(bgFlash*20)|0},${(bgFlash*15)|0})`;
+    ctx.fillRect(0, 0, W, H);
+
+    const cx = W/2, cy = H/2;
+
+    if (style === 0) {
+      // PULSE: expanding circle from center
+      const maxR = Math.min(W, H) * 0.4;
+      const r = maxR * (0.3 + beat * 0.7);
+      const grad = ctx.createRadialGradient(cx, cy, r*0.1, cx, cy, r);
+      grad.addColorStop(0, getColor(hrStress, 0.5 + beat * 0.5));
+      grad.addColorStop(0.5, getColor(hrStress, 0.15 + beat * 0.2));
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fill();
+
+      // Inner bright core
+      const coreR = r * 0.15;
+      ctx.beginPath();
+      ctx.arc(cx, cy, coreR, 0, Math.PI*2);
+      ctx.fillStyle = getColor(hrStress, beat * 0.8);
+      ctx.fill();
+
+    } else if (style === 1) {
+      // RING: pulsing ring that expands on beat
+      const baseR = Math.min(W, H) * 0.25;
+      const r = baseR + beat * baseR * 0.3;
+      const lineW = 3 + beat * 15 + hrStress * 5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.strokeStyle = getColor(hrStress, 0.3 + beat * 0.7);
+      ctx.lineWidth = lineW;
+      ctx.stroke();
+
+      // Ripples expanding outward
+      for (let i = 1; i <= 3; i++) {
+        const ripplePhase = (beatPhase + i * 0.15) % 1;
+        const rippleR = baseR + ripplePhase * baseR * 0.8;
+        const rippleAlpha = Math.max(0, (1 - ripplePhase) * 0.15);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rippleR, 0, Math.PI*2);
+        ctx.strokeStyle = getColor(hrStress, rippleAlpha);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+    } else if (style === 2) {
+      // PARTICLES ONLY: just the particle system, nothing else
+    }
+
+    // Particles render on ALL styles as a persistent layer
+    drawParticles(hrStress);
+    updateParticles(Math.min(0.05, 1/60), now);
+
+    // BPM display
+    if (currentHR > 0) {
+      const bpmAlpha = 0.06 + beat * 0.08 + alarm * 0.2;
+      bpmEl.style.color = `rgba(255,${40 + alarm*100|0},${40 + alarm*60|0},${bpmAlpha})`;
+      bpmEl.textContent = currentHR;
+      // Scale on beat
+      const scale = 1 + beat * 0.05;
+      bpmEl.style.transform = `translate(-50%,-50%) scale(${scale})`;
+    }
+
+    // Info
+    const rmssdStr = currentRMSSD > 0 ? currentRMSSD.toFixed(0) + 'ms' : '--';
+    infoEl.innerHTML = `RMSSD ${rmssdStr} · ${STYLES[style]} · audio: ${AUDIO_MODES[audioMode]} · ${particles.length} particles`;
+
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+</script>
+</body></html>
