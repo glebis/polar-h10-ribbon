@@ -1335,32 +1335,71 @@ async def run(args):
                             db.commit()
                             rr_batch.clear()
 
-                    # --- BUZZER HEARTBEAT FADE (smooth sine-shaped pulse) ---
+                    # --- BUZZER HEARTBEAT + ALERT EFFECTS ---
                     if buzzer_ok and not buzzer.pressed and last_beat_time > 0:
-                        if now - last_buzzer_fade >= 0.03:
+                        if now - last_buzzer_fade >= 0.025:
                             last_buzzer_fade = now
                             expected_interval = 60.0 / max(40, hrv.hr_from_rr) if hrv.hr_from_rr > 0 else 1.0
                             elapsed = now - last_beat_time
-                            # Smooth pulse: sine-shaped rise then gentle fall
-                            phase = elapsed / expected_interval
-                            if phase < 0.15:
-                                # rise (soft onset)
-                                fade = math.sin(phase / 0.15 * math.pi / 2)
-                            elif phase < 0.5:
-                                # smooth decay
-                                fade = math.cos((phase - 0.15) / 0.35 * math.pi / 2)
-                            else:
-                                # dim rest between beats
-                                fade = max(0.05, 0.15 * math.exp(-(phase - 0.5) * 3))
-                            # Color: red (healthy) → blue (stressed)
                             drop = hrv.drop_intensity
-                            base_r = int(255 * (1 - drop))
-                            base_g = int(20 * (1 - drop))
-                            base_b = int(255 * drop)
-                            r = int(base_r * fade)
-                            g = int(base_g * fade)
-                            b = int(base_b * fade)
-                            buzzer.set_rgb(r, g, b)
+                            trend_neg = max(0, -hrv.trend)
+
+                            # --- Attention grab: strobe sweep when actively dipping ---
+                            if trend_neg > 0.5 and drop > 0.3:
+                                # Rapid segment chase pattern during active decline
+                                chase_speed = 4 + trend_neg * 8  # faster chase = steeper decline
+                                chase_phase = (now * chase_speed) % 3
+                                seg_idx = int(chase_phase)
+                                seg_brightness = 1.0 - (chase_phase - seg_idx)
+                                colors = [(0,0,0), (0,0,0), (0,0,0)]
+                                # Color intensity scales with drop severity
+                                intensity = int(100 + drop * 155)
+                                if drop > 0.6:
+                                    c = (intensity, 0, int(intensity * 0.6))  # magenta for severe
+                                else:
+                                    c = (0, int(intensity * 0.3), intensity)  # blue-purple for moderate
+                                colors[seg_idx] = (int(c[0]*seg_brightness), int(c[1]*seg_brightness), int(c[2]*seg_brightness))
+                                # Next segment gets the tail
+                                next_seg = (seg_idx + 1) % 3
+                                tail = 1.0 - seg_brightness
+                                colors[next_seg] = (int(c[0]*tail*0.4), int(c[1]*tail*0.4), int(c[2]*tail*0.4))
+                                buzzer.set_segments(colors)
+
+                            # --- Stressed but stable: intense heartbeat pulse ---
+                            elif drop > 0.3:
+                                phase = elapsed / expected_interval
+                                if phase < 0.12:
+                                    fade = math.sin(phase / 0.12 * math.pi / 2)
+                                elif phase < 0.4:
+                                    fade = math.cos((phase - 0.12) / 0.28 * math.pi / 2)
+                                else:
+                                    fade = max(0.1, 0.25 * math.exp(-(phase - 0.4) * 2))
+                                # Brighter minimum floor when stressed
+                                fade = max(fade, drop * 0.3)
+                                base_r = int(255 * (1 - drop))
+                                base_g = int(20 * (1 - drop))
+                                base_b = int(255 * drop)
+                                r = int(base_r * fade)
+                                g = int(base_g * fade)
+                                b = int(base_b * fade)
+                                buzzer.set_rgb(r, g, b)
+
+                            # --- Calm: gentle heartbeat ---
+                            else:
+                                phase = elapsed / expected_interval
+                                if phase < 0.15:
+                                    fade = math.sin(phase / 0.15 * math.pi / 2)
+                                elif phase < 0.5:
+                                    fade = math.cos((phase - 0.15) / 0.35 * math.pi / 2)
+                                else:
+                                    fade = max(0.03, 0.1 * math.exp(-(phase - 0.5) * 3))
+                                base_r = int(255 * (1 - drop))
+                                base_g = int(20 * (1 - drop))
+                                base_b = int(255 * drop)
+                                r = int(base_r * fade)
+                                g = int(base_g * fade)
+                                b = int(base_b * fade)
+                                buzzer.set_rgb(r, g, b)
 
                     # --- ACC ---
                     elif msg.get("type") == "acc":
