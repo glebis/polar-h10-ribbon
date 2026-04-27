@@ -262,6 +262,62 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   letter-spacing: 1px; text-transform: uppercase;
 }
 #export-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.08); }
+
+/* DFA alpha1 gauge */
+#dfa-gauge {
+  position: fixed;
+  bottom: 8px;
+  right: 12px;
+  margin-bottom: 0;
+  z-index: 20;
+  pointer-events: none;
+  font-family: 'SF Mono', Menlo, 'Courier New', monospace;
+}
+#dfa-gauge .gauge-label {
+  font-size: 9px;
+  color: rgba(255,255,255,0.2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+#dfa-gauge .gauge-bar {
+  position: relative;
+  width: 160px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: visible;
+  background: linear-gradient(to right,
+    #c04040 0%, #c04040 32.5%,
+    #d49040 32.5%, #d49040 37.5%,
+    #40a060 37.5%, #40a060 62.5%,
+    #c0b040 62.5%, #c0b040 75%,
+    #c04040 75%, #c04040 100%
+  );
+  opacity: 0.7;
+}
+#dfa-gauge .gauge-marker {
+  position: absolute;
+  top: -3px;
+  width: 3px; height: 14px;
+  border-radius: 1px;
+  background: #fff;
+  transform: translateX(-1px);
+  box-shadow: 0 0 4px rgba(255,255,255,0.5);
+  transition: left 0.5s ease;
+}
+#dfa-gauge .gauge-ticks {
+  display: flex;
+  justify-content: space-between;
+  width: 160px;
+  font-size: 7px;
+  color: rgba(255,255,255,0.15);
+  margin-top: 1px;
+}
+#dfa-gauge .gauge-value {
+  font-size: 11px;
+  margin-top: 2px;
+  text-align: right;
+}
 </style>
 </head>
 <body>
@@ -331,6 +387,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 
 <div id="export-btn">export</div>
 
+<div id="dfa-gauge" style="display:none">
+  <div class="gauge-label">DFA &alpha;1</div>
+  <div class="gauge-bar"><div class="gauge-marker" id="dfa-marker"></div></div>
+  <div class="gauge-ticks"><span>0</span><span>0.65</span><span>1.0</span><span>1.5</span><span>2</span></div>
+  <div class="gauge-value" id="dfa-value">--</div>
+</div>
 <div id="metrics-overlay"></div>
 <div id="status">reconnecting...</div>
 
@@ -467,6 +529,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   const ACC_MAX = 500;
   const accZBuffer = []; // legacy Z-axis only for breath detection
 
+  // DFA alpha1 state
+  let currentDFA = 0;
+  const dfaHistory = []; // {ts, alpha}
+  const DFA_MAX = 600;
+  let lastDFACompute = 0;
+  const DFA_INTERVAL = 30; // seconds between DFA recomputes
+
   let currentRMSSD = 0;
   let currentSDNN = 0;
   let currentHR = 0;
@@ -526,6 +595,74 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     const variance = centered.reduce((s, v) => s + v * v, 0) / centered.length;
     if (variance < 1) return 0;
     return Math.min(10, Math.max(0, (maxCorr / variance) * 10));
+  }
+
+  // ── DFA alpha1 ──
+  function computeDFA(rr) {
+    // Detrended Fluctuation Analysis (short-term alpha1)
+    // Needs at least 64 RR intervals
+    if (rr.length < 64) return 0;
+    const data = rr.slice(-200); // use last 200 max
+    const N = data.length;
+    const mean = data.reduce((a, b) => a + b, 0) / N;
+    // Integrate (cumulative sum of mean-subtracted series)
+    const y = new Array(N);
+    y[0] = data[0] - mean;
+    for (let i = 1; i < N; i++) y[i] = y[i - 1] + (data[i] - mean);
+    // Box sizes: 4 to 16 (short-term alpha1)
+    const boxSizes = [];
+    for (let s = 4; s <= 16; s++) boxSizes.push(s);
+    const logN = [];
+    const logF = [];
+    for (const s of boxSizes) {
+      const numBoxes = Math.floor(N / s);
+      if (numBoxes < 1) continue;
+      let totalFluc = 0;
+      for (let b = 0; b < numBoxes; b++) {
+        const start = b * s;
+        // Linear detrend within box using least-squares
+        let sx = 0, sy = 0, sxy = 0, sx2 = 0;
+        for (let i = 0; i < s; i++) {
+          const x = i;
+          const yv = y[start + i];
+          sx += x; sy += yv; sxy += x * yv; sx2 += x * x;
+        }
+        const denom = s * sx2 - sx * sx;
+        const slope = denom !== 0 ? (s * sxy - sx * sy) / denom : 0;
+        const intercept = (sy - slope * sx) / s;
+        let fluc = 0;
+        for (let i = 0; i < s; i++) {
+          const trend = intercept + slope * i;
+          const diff = y[start + i] - trend;
+          fluc += diff * diff;
+        }
+        totalFluc += fluc / s;
+      }
+      const F = Math.sqrt(totalFluc / numBoxes);
+      if (F > 0) {
+        logN.push(Math.log(s));
+        logF.push(Math.log(F));
+      }
+    }
+    if (logN.length < 3) return 0;
+    // Linear regression in log-log space => alpha
+    const n = logN.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (let i = 0; i < n; i++) {
+      sumX += logN[i]; sumY += logF[i]; sumXY += logN[i] * logF[i]; sumX2 += logN[i] * logN[i];
+    }
+    const denom = n * sumX2 - sumX * sumX;
+    if (denom === 0) return 0;
+    return (n * sumXY - sumX * sumY) / denom;
+  }
+
+  function dfaColor(alpha) {
+    if (alpha <= 0) return 'rgba(255,255,255,0.2)';
+    if (alpha < 0.65) return '#c04040';
+    if (alpha < 0.75) return '#d49040';
+    if (alpha <= 1.25) return '#40a060';
+    if (alpha <= 1.5) return '#c0b040';
+    return '#c04040';
   }
 
   function estimateBreathRate(accZ) {
@@ -1170,11 +1307,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
       rmssd_history: rmssdHistory.map(h => ({ ts: h.ts.toFixed(2), rmssd: h.rmssd.toFixed(1) })),
       hr_history: hrHistory.map(h => ({ ts: h.ts.toFixed(2), hr: h.hr })),
       rr_intervals: rrIntervals.slice(),
+      dfa_history: dfaHistory.map(h => ({ ts: h.ts.toFixed(2), alpha: h.alpha.toFixed(3) })),
       summary: {
         avg_rmssd: currentRMSSD.toFixed(1),
         avg_hr: currentHR,
         sdnn: currentSDNN.toFixed(1),
         coherence: coherenceScore.toFixed(2),
+        dfa_alpha1: currentDFA > 0 ? currentDFA.toFixed(3) : null,
         total_annotations: annotations.length,
       },
     };
@@ -1262,6 +1401,17 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
               if (rmssdHistory.length > RMSSD_MAX) rmssdHistory.shift();
 
               checkRecovery();
+
+              // DFA alpha1: recompute every ~30s if enough data
+              if (rrIntervals.length >= 64 && now_s - lastDFACompute >= DFA_INTERVAL) {
+                const alpha = computeDFA(rrIntervals.slice(-120));
+                if (alpha > 0) {
+                  currentDFA = alpha;
+                  dfaHistory.push({ ts: now_s, alpha });
+                  if (dfaHistory.length > DFA_MAX) dfaHistory.shift();
+                  lastDFACompute = now_s;
+                }
+              }
             }
           }
         }
@@ -1609,6 +1759,41 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
         ctx.fillStyle = 'rgba(80,180,220,0.8)';
         ctx.fill();
       }
+    }
+
+    // DFA alpha1 trace (dotted, own y-axis 0-2)
+    if (dfaHistory.length >= 2) {
+      const dfaMin = 0, dfaMax = 2;
+      function toYdfa(v) { return pad.top + plotH - ((Math.min(dfaMax, Math.max(dfaMin, v)) - dfaMin) / (dfaMax - dfaMin)) * plotH; }
+
+      ctx.beginPath();
+      ctx.setLineDash([3, 4]);
+      let started = false;
+      for (const pt of dfaHistory) {
+        if (pt.ts < tStart) continue;
+        const x = toX(pt.ts);
+        const y = toYdfa(pt.alpha);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(180,140,255,0.5)';
+      ctx.lineWidth = 1;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Current DFA marker
+      const lastDFA = dfaHistory[dfaHistory.length - 1];
+      if (lastDFA.ts >= tStart) {
+        ctx.beginPath();
+        ctx.arc(toX(lastDFA.ts), toYdfa(lastDFA.alpha), 3, 0, Math.PI * 2);
+        ctx.fillStyle = dfaColor(lastDFA.alpha);
+        ctx.fill();
+      }
+
+      // DFA zone bands (very subtle)
+      ctx.fillStyle = 'rgba(64,160,96,0.03)';
+      ctx.fillRect(pad.left, toYdfa(1.25), plotW, toYdfa(0.75) - toYdfa(1.25));
     }
 
     // Annotations on timeline
@@ -1960,6 +2145,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
       lines.push(`RESP   ${currentBreathRate.toFixed(1)} /min`);
     }
     lines.push(`COH    ${coherenceScore.toFixed(1)}`);
+    if (currentDFA > 0) {
+      lines.push(`DFAα1  ${currentDFA.toFixed(2)}`);
+    }
     if (stillnessPercent > 0) {
       lines.push(`STILL  ${stillnessPercent.toFixed(0)}%`);
     }
@@ -1968,6 +2156,25 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     }
     metricsEl.textContent = lines.join('\n');
     metricsEl.style.whiteSpace = 'pre';
+
+    // Update DFA gauge
+    const dfaGauge = document.getElementById('dfa-gauge');
+    const dfaMarker = document.getElementById('dfa-marker');
+    const dfaValue = document.getElementById('dfa-value');
+    if (currentDFA > 0) {
+      dfaGauge.style.display = 'block';
+      // Position metrics overlay above the gauge
+      metricsEl.style.bottom = '74px';
+      const clamped = Math.max(0, Math.min(2, currentDFA));
+      const pct = (clamped / 2) * 100;
+      dfaMarker.style.left = pct + '%';
+      const col = dfaColor(currentDFA);
+      dfaValue.style.color = col;
+      dfaValue.textContent = `α1 ${currentDFA.toFixed(2)}`;
+    } else {
+      dfaGauge.style.display = 'none';
+      metricsEl.style.bottom = '8px';
+    }
   }
 
   // ── Main loop ──
