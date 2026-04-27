@@ -161,3 +161,7 @@ All stored in `hrv_data.db` (SQLite):
 - [Polar H10](https://www.polar.com/en/sensors/h10-heart-rate-sensor) chest strap
 - [Philips Hue](https://www.philips-hue.com/) lights + bridge
 - [timeBuzzer](https://www.timebuzzer.com/) USB-C device (optional)
+
+## Legal
+
+See [LEGAL.md](LEGAL.md) for details on hardware interoperability, protocol documentation methods, and disclaimers. All hardware communication uses standard interfaces (USB-MIDI, BLE GATT, HTTP). No proprietary code is included or redistributed.
