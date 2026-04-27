@@ -396,6 +396,53 @@ class AdvancedAnalyzer:
         return f"ln={self.ln_rmssd:.2f} {alpha} {ent} pNN50={self.pnn50:.0f}%"
 
 
+# === NOTIFICATIONS ===
+
+def notify(title: str, message: str, sound: str = "Glass"):
+    subprocess.Popen(["osascript", "-e",
+        f'display notification "{message}" with title "{title}" sound name "{sound}"'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class HealthMonitor:
+    """Monitors battery, stillness, HR extremes, and sends macOS notifications."""
+    def __init__(self):
+        self.battery_pct: int = 100
+        self.battery_warned: bool = False
+        self.battery_critical: bool = False
+        self.last_move_reminder: float = 0
+        self.MOVE_REMIND_INTERVAL: float = 1800  # 30 min
+        self.last_hr_alert: float = 0
+        self.last_status_notify: float = 0
+
+    def update_battery(self, pct: int, now: float):
+        self.battery_pct = pct
+        if pct <= 10 and not self.battery_critical:
+            self.battery_critical = True
+            notify("Polar H10 Battery Critical", f"Battery at {pct}% — replace soon!", "Basso")
+            print(f"\n  🔋 BATTERY CRITICAL: {pct}%")
+        elif pct <= 25 and not self.battery_warned:
+            self.battery_warned = True
+            notify("Polar H10 Battery Low", f"Battery at {pct}%", "Glass")
+            print(f"\n  🔋 Battery low: {pct}%")
+
+    def check_stillness(self, stillness: float, still_duration_s: float, now: float):
+        if stillness > 0.85 and still_duration_s > 1800 and now - self.last_move_reminder > self.MOVE_REMIND_INTERVAL:
+            self.last_move_reminder = now
+            mins = int(still_duration_s / 60)
+            notify("Time to Move", f"You've been still for {mins} minutes. Stand up, stretch, walk around.", "Purr")
+
+    def check_hr(self, hr: float, now: float):
+        if now - self.last_hr_alert < 300:  # 5 min cooldown
+            return
+        if hr > 120 and now - self.last_hr_alert > 60:
+            # Only alert if sustained (not exercise)
+            pass  # HR alerts are handled by the alert engine
+        elif hr < 45 and hr > 0:
+            self.last_hr_alert = now
+            notify("Low Heart Rate", f"HR dropped to {hr:.0f} bpm", "Glass")
+
+
 # === MOVEMENT / STILLNESS ===
 
 @dataclass
@@ -1149,6 +1196,7 @@ async def run(args):
     movement = MovementTracker()
     alerts = AlertEngine()
     advanced = AdvancedAnalyzer()
+    health = HealthMonitor()
     light = LightState(mode=args.mode)
 
     # Hardware
@@ -1338,9 +1386,19 @@ async def run(args):
                                 db.commit()
                                 mins = alert["still_duration_s"] / 60
                                 print(f"\n  🦶 Still for {mins:.0f} min — time to move!")
-                                # flash buzzer orange
+                                # flash buzzer orange + notification
                                 if buzzer_ok:
                                     buzzer.set_rgb(255, 127, 0)
+                                still_dur = (now - movement.still_since) if movement.still_since > 0 else 0
+                                health.check_stillness(movement.stillness, still_dur, now)
+
+                    # --- BATTERY ---
+                    elif msg.get("type") == "battery":
+                        health.update_battery(msg.get("pct", 100), now)
+
+                    # --- HR monitoring ---
+                    if hrv.hr_from_rr > 0:
+                        health.check_hr(hrv.hr_from_rr, now)
 
         except ConnectionRefusedError:
             print("\r  Bridge not running. Retrying in 3s…", end="", flush=True)
