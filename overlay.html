@@ -46,6 +46,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 #pacer-bar .mode:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
 #pacer-bar .mode.active { color: #fff; background: rgba(255,255,255,0.12); }
 
+#sound-indicator {
+  position: fixed;
+  top: 8px;
+  right: 12px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  z-index: 25;
+  text-align: right;
+  pointer-events: none;
+  letter-spacing: 0.5px;
+}
+
 #zoom-row {
   position: absolute;
   top: 6px;
@@ -65,7 +77,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 #poincare-panel { grid-column: 1; grid-row: 2; }
 #timeline-panel { grid-column: 2; grid-row: 2; }
 #ecg-panel { grid-column: 1; grid-row: 3; }
-#breath-wave-panel { grid-column: 2; grid-row: 3; }
+#movement-panel { grid-column: 2; grid-row: 3; }
 
 .panel canvas { display: block; width: 100%; height: 100%; }
 
@@ -125,6 +137,131 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   z-index: 30;
 }
 #status.visible { opacity: 1; }
+
+/* Config panel */
+#config-panel {
+  position: fixed;
+  top: 0; right: -340px;
+  width: 330px; height: 100%;
+  background: rgba(10,10,15,0.92);
+  border-left: 1px solid rgba(255,255,255,0.08);
+  z-index: 50;
+  padding: 20px 16px;
+  overflow-y: auto;
+  transition: right 0.25s ease;
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+}
+#config-panel.open { right: 0; }
+#config-panel h3 {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.3);
+  margin: 18px 0 10px;
+  font-weight: normal;
+}
+#config-panel h3:first-child { margin-top: 0; }
+#config-panel label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 6px 0;
+}
+#config-panel label span { flex: 1; }
+#config-panel input[type=range] {
+  width: 120px;
+  accent-color: rgba(255,255,255,0.3);
+}
+#config-panel .val {
+  width: 36px;
+  text-align: right;
+  font-size: 10px;
+  color: rgba(255,255,255,0.35);
+}
+
+/* Annotation bar */
+#anno-bar {
+  position: fixed;
+  bottom: 40px;
+  left: 16px;
+  z-index: 40;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+#anno-bar.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
+#anno-bar .tag {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+  color: rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  letter-spacing: 0.5px;
+}
+#anno-bar .tag:hover { color: #fff; background: rgba(255,255,255,0.12); }
+#anno-bar .tag.active { color: #fff; border-color: rgba(100,200,255,0.4); background: rgba(100,200,255,0.1); }
+#anno-input {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: 10px 'SF Mono', Menlo, monospace;
+  color: #fff;
+  width: 160px;
+  outline: none;
+}
+#anno-input::placeholder { color: rgba(255,255,255,0.2); }
+#anno-input:focus { border-color: rgba(100,200,255,0.4); }
+
+/* Experiment panel */
+#experiment-panel {
+  position: fixed;
+  top: 0; left: -360px;
+  width: 350px; height: 100%;
+  background: rgba(10,10,15,0.92);
+  border-right: 1px solid rgba(255,255,255,0.08);
+  z-index: 50;
+  padding: 20px 16px;
+  overflow-y: auto;
+  transition: left 0.25s ease;
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+}
+#experiment-panel.open { left: 0; }
+#experiment-panel h3 {
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.3); margin: 14px 0 8px; font-weight: normal;
+}
+#experiment-panel h3:first-child { margin-top: 0; }
+#experiment-panel .exp-btn {
+  display: inline-block; padding: 5px 12px; border-radius: 4px;
+  font-size: 10px; cursor: pointer; user-select: none;
+  color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08); margin: 3px 3px 3px 0;
+}
+#experiment-panel .exp-btn:hover { color: #fff; background: rgba(255,255,255,0.12); }
+#experiment-panel .exp-btn.running { color: #4ecdc4; border-color: rgba(78,205,196,0.4); }
+#exp-log { margin-top: 12px; font-size: 10px; line-height: 1.6; max-height: 300px; overflow-y: auto; }
+#exp-log .entry { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+#exp-log .entry .t { color: rgba(255,255,255,0.25); }
+
+/* Export button */
+#export-btn {
+  position: fixed; top: 10px; right: 60px; z-index: 40;
+  font-size: 9px; padding: 3px 8px; border-radius: 3px;
+  color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06); cursor: pointer;
+  letter-spacing: 1px; text-transform: uppercase;
+}
+#export-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.08); }
 </style>
 </head>
 <body>
@@ -157,9 +294,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     <div class="panel-label">ECG</div>
     <canvas id="c-ecg"></canvas>
   </div>
-  <div id="breath-wave-panel" class="panel">
-    <div class="panel-label">Breathing</div>
-    <canvas id="c-breath"></canvas>
+  <div id="movement-panel" class="panel">
+    <div class="panel-label">Movement / Breathing</div>
+    <canvas id="c-movement"></canvas>
   </div>
 </div>
 
@@ -167,8 +304,54 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   <canvas id="pacer-canvas"></canvas>
 </div>
 
+<div id="sound-indicator"></div>
+<div id="anno-bar">
+  <div class="tag" data-tag="pushups">pushups</div>
+  <div class="tag" data-tag="breathing">breathing</div>
+  <div class="tag" data-tag="walking">walking</div>
+  <div class="tag" data-tag="exercise">exercise</div>
+  <div class="tag" data-tag="smoking">smoking</div>
+  <div class="tag" data-tag="coffee">coffee</div>
+  <div class="tag" data-tag="rest">rest</div>
+  <div class="tag" data-tag="stress">stress</div>
+  <input id="anno-input" type="text" placeholder="custom note..." />
+</div>
+
+<div id="experiment-panel">
+  <h3>Experiments</h3>
+  <div class="exp-btn" data-exp="breathing">Breathing test</div>
+  <div class="exp-btn" data-exp="exercise">Exercise test</div>
+  <div class="exp-btn" data-exp="substance">Substance test</div>
+  <div class="exp-btn" data-exp="custom">Custom</div>
+  <h3>Running</h3>
+  <div id="exp-status" style="font-size:10px;color:rgba(255,255,255,0.3)">No experiment active</div>
+  <h3>Log</h3>
+  <div id="exp-log"></div>
+</div>
+
+<div id="export-btn">export</div>
+
 <div id="metrics-overlay"></div>
 <div id="status">reconnecting...</div>
+
+<div id="config-panel">
+  <h3>Sound Mapping</h3>
+  <label><span>HR -> heartbeat vol</span><input type="range" min="0" max="100" data-cfg="hrToHeartbeatVol"><span class="val"></span></label>
+  <label><span>RMSSD -> heartbeat pitch</span><input type="range" min="0" max="100" data-cfg="rmssdToHeartbeatPitch"><span class="val"></span></label>
+  <label><span>RMSSD -> rumble vol (inv)</span><input type="range" min="0" max="100" data-cfg="rmssdToRumbleVol"><span class="val"></span></label>
+  <label><span>Breath -> tone pitch</span><input type="range" min="0" max="100" data-cfg="breathToTonePitch"><span class="val"></span></label>
+  <label><span>Stress -> filter cutoff</span><input type="range" min="0" max="100" data-cfg="stressToFilter"><span class="val"></span></label>
+  <h3>Thresholds</h3>
+  <label><span>Stress RMSSD threshold</span><input type="range" min="5" max="80" data-cfg="stressThreshold"><span class="val"></span></label>
+  <label><span>Recovery RMSSD threshold</span><input type="range" min="10" max="100" data-cfg="recoveryThreshold"><span class="val"></span></label>
+  <h3>Keyboard</h3>
+  <div style="color:rgba(255,255,255,0.25);line-height:1.8;margin-top:4px">
+    S — cycle sound mode<br>
+    M — mute / unmute<br>
+    1-6 — toggle individual sounds<br>
+    C — toggle this panel<br>
+  </div>
+</div>
 
 <script>
 (function() {
@@ -214,19 +397,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   const cPoincare = initCanvas('c-poincare');
   const cTimeline = initCanvas('c-timeline');
   const cEcg = initCanvas('c-ecg');
-  const cBreath = initCanvas('c-breath');
-  const allCanvases = [cPoincare, cTimeline, cEcg, cBreath];
+  const cMovement = initCanvas('c-movement');
+  const allCanvases = [cPoincare, cTimeline, cEcg, cMovement];
 
   function resizeAll() {
     allCanvases.forEach(sizeCanvas);
     sizePacer();
   }
   window.addEventListener('resize', resizeAll);
-  // Initial size after layout settles
   requestAnimationFrame(() => { resizeAll(); requestAnimationFrame(resizeAll); });
 
   const metricsEl = document.getElementById('metrics-overlay');
   const statusEl = document.getElementById('status');
+  const soundIndicatorEl = document.getElementById('sound-indicator');
+  const configPanel = document.getElementById('config-panel');
 
   // ── Breathing patterns ──
   const PATTERNS = {
@@ -265,21 +449,23 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 
   // ── Data buffers ──
   const RR_MAX = 200;
-  const rrIntervals = [];            // raw RR values
-  const rrTimestamps = [];           // timestamps for each RR
-  const poincarePoints = [];         // {x, y, t} max 200
+  const rrIntervals = [];
+  const rrTimestamps = [];
+  const poincarePoints = [];
   const POINCARE_MAX = 200;
 
-  const rmssdHistory = [];           // {ts, rmssd} max 3600
+  const rmssdHistory = [];
   const RMSSD_MAX = 3600;
-  const hrHistory = [];              // {ts, hr} max 3600
+  const hrHistory = [];
   const HR_MAX = 3600;
 
-  const ecgBuffer = [];              // raw samples, max 400
-  const ECG_MAX = 400;
+  const ecgBuffer = [];
+  const ECG_MAX = 520;
 
-  const accZBuffer = [];             // Z-axis samples, max 500
+  // Full ACC buffer: each entry is [x, y, z]
+  const accBuffer = [];
   const ACC_MAX = 500;
+  const accZBuffer = []; // legacy Z-axis only for breath detection
 
   let currentRMSSD = 0;
   let currentSDNN = 0;
@@ -287,6 +473,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   let currentBreathRate = 0;
   let coherenceScore = 0;
   let startTs = 0;
+
+  // R-peak detection state
+  const rPeakIndices = []; // indices into ecgBuffer where peaks were detected
+  const RPEAK_MAX = 100;
+  let rPeakHR = 0; // instantaneous HR from R-peaks
+  const rPeakHRHistory = []; // {ts, hr} for last 30s mini trend
+  const RPEAK_HR_MAX = 120; // ~30s at typical HR
+
+  // Movement / stillness
+  let stillnessPercent = 0;
+  let stepCount = 0;
+  let lastStepTime = 0;
+
+  // Stress tracking for recovery chime
+  let wasStressed = false;
+  let stressStartTime = 0;
 
   // ── HRV computation ──
   function computeRMSSD(arr) {
@@ -308,13 +510,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
   }
 
   function computeCoherence(arr) {
-    // Simple coherence: ratio of power in 0.04-0.26 Hz band vs total
     if (arr.length < 10) return 0;
-    // Use last 60 RR intervals
     const recent = arr.slice(-60);
     const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
     const centered = recent.map(v => v - mean);
-    // Very rough spectral peak detection via autocorrelation
     let maxCorr = 0;
     for (let lag = 3; lag < Math.min(20, centered.length); lag++) {
       let corr = 0;
@@ -331,7 +530,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 
   function estimateBreathRate(accZ) {
     if (accZ.length < 100) return 0;
-    // Simple zero-crossing rate on smoothed Z-axis
     const win = 10;
     const smoothed = [];
     for (let i = 0; i < accZ.length; i++) {
@@ -346,25 +544,677 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     for (let i = 1; i < smoothed.length; i++) {
       if ((smoothed[i - 1] - mean) * (smoothed[i] - mean) < 0) crossings++;
     }
-    // At 50Hz, buffer duration = length / 50
     const duration = accZ.length / 50;
     const cyclesPerSec = (crossings / 2) / duration;
-    return cyclesPerSec * 60; // breaths per minute
+    return cyclesPerSec * 60;
+  }
+
+  // R-peak detection (simple threshold-based on ECG)
+  function detectRPeaks() {
+    if (ecgBuffer.length < 30) return;
+    // Work on last batch of samples added
+    const lookback = 20;
+    const startIdx = Math.max(0, ecgBuffer.length - lookback);
+
+    // Adaptive threshold: mean + 0.6 * (max - mean) of recent window
+    const windowSize = Math.min(130, ecgBuffer.length); // ~1 second
+    const recentWindow = ecgBuffer.slice(-windowSize);
+    let sum = 0, maxVal = -Infinity;
+    for (const v of recentWindow) { sum += v; if (v > maxVal) maxVal = v; }
+    const mean = sum / recentWindow.length;
+    const threshold = mean + 0.6 * (maxVal - mean);
+
+    // Minimum distance between peaks: ~300ms at 130Hz = 39 samples
+    const minDist = 39;
+
+    for (let i = startIdx + 2; i < ecgBuffer.length - 2; i++) {
+      const v = ecgBuffer[i];
+      if (v < threshold) continue;
+      // Must be local maximum
+      if (v <= ecgBuffer[i-1] || v <= ecgBuffer[i+1]) continue;
+      if (v < ecgBuffer[i-2] || v < ecgBuffer[i+2]) continue;
+
+      // Check distance from last peak
+      if (rPeakIndices.length > 0) {
+        const lastPeakIdx = rPeakIndices[rPeakIndices.length - 1];
+        if (i - lastPeakIdx < minDist) continue;
+      }
+
+      rPeakIndices.push(i);
+      if (rPeakIndices.length > RPEAK_MAX) rPeakIndices.shift();
+
+      // Compute instantaneous HR from last two peaks
+      if (rPeakIndices.length >= 2) {
+        const n = rPeakIndices.length;
+        const intervalSamples = rPeakIndices[n-1] - rPeakIndices[n-2];
+        const intervalSec = intervalSamples / 130;
+        if (intervalSec > 0.3 && intervalSec < 2.0) {
+          rPeakHR = Math.round(60 / intervalSec);
+          const now_s = performance.now() / 1000 - startTs;
+          rPeakHRHistory.push({ ts: now_s, hr: rPeakHR });
+          if (rPeakHRHistory.length > RPEAK_HR_MAX) rPeakHRHistory.shift();
+        }
+      }
+
+      // Trigger heartbeat sound
+      if (audioCtx && soundEnabled.heartbeat && !soundMuted) {
+        playHeartbeat();
+      }
+    }
+  }
+
+  // Step detection and stillness from accelerometer
+  function updateMovement() {
+    if (accBuffer.length < 20) return;
+    const recent = accBuffer.slice(-50); // last 1 second at 50Hz
+
+    // Compute magnitude variations
+    let sumMag = 0;
+    const mags = [];
+    for (const [x, y, z] of recent) {
+      const mag = Math.sqrt(x*x + y*y + z*z);
+      mags.push(mag);
+      sumMag += mag;
+    }
+    const meanMag = sumMag / mags.length;
+
+    // Stillness: inverse of magnitude variance normalized
+    let variance = 0;
+    for (const m of mags) { const d = m - meanMag; variance += d * d; }
+    variance /= mags.length;
+    // Typical stillness: variance < 500 -> 100%, variance > 50000 -> 0%
+    stillnessPercent = Math.max(0, Math.min(100, 100 * (1 - variance / 50000)));
+
+    // Step detection: look for rhythmic peaks in magnitude
+    if (accBuffer.length >= 100) {
+      const lastMags = [];
+      for (let i = Math.max(0, accBuffer.length - 100); i < accBuffer.length; i++) {
+        const [x, y, z] = accBuffer[i];
+        lastMags.push(Math.sqrt(x*x + y*y + z*z));
+      }
+      const avgMag = lastMags.reduce((a,b)=>a+b,0) / lastMags.length;
+      const peakThresh = avgMag + 150; // step threshold in milli-g
+      const now = performance.now() / 1000;
+
+      for (let i = 2; i < lastMags.length - 2; i++) {
+        if (lastMags[i] > peakThresh &&
+            lastMags[i] > lastMags[i-1] && lastMags[i] > lastMags[i+1] &&
+            lastMags[i] > lastMags[i-2] && lastMags[i] > lastMags[i+2]) {
+          const sampleTime = now - (lastMags.length - i) / 50;
+          if (sampleTime - lastStepTime > 0.25) { // min 0.25s between steps
+            stepCount++;
+            lastStepTime = sampleTime;
+          }
+        }
+      }
+    }
   }
 
   // ── Color helpers ──
-  // stress 0 = relaxed (warm amber), 1 = stressed (cool blue-purple)
   function stressFromRMSSD(rmssd) {
     if (rmssd <= 0) return 0.5;
     return Math.max(0, Math.min(1, 1 - (rmssd - 15) / 50));
   }
 
   function lerpColor(stress) {
-    // Warm amber [255,180,60] -> Cool blue-purple [100,80,220]
     const r = 255 - stress * 155;
     const g = 180 - stress * 100;
     const b = 60 + stress * 160;
     return [r | 0, g | 0, b | 0];
+  }
+
+  // ══════════════════════════════════════════════════════
+  // ── Web Audio Sound Engine ──
+  // ══════════════════════════════════════════════════════
+
+  let audioCtx = null;
+  let masterGain = null;
+  let masterFilter = null;
+
+  // Individual sound enabled states
+  const soundEnabled = {
+    heartbeat: false,
+    breath_tone: false,
+    stress_rumble: false,
+    recovery_chime: false,
+    marker_click: false,
+    stillness_bell: false,
+  };
+  const SOUND_NAMES = ['heartbeat', 'breath_tone', 'stress_rumble', 'recovery_chime', 'marker_click', 'stillness_bell'];
+
+  let soundMuted = false;
+  // Sound modes: off -> heartbeat -> breath -> heartbeat+breath -> all -> off
+  const SOUND_MODES = [
+    { name: 'off', sounds: [] },
+    { name: 'heartbeat', sounds: ['heartbeat'] },
+    { name: 'breath', sounds: ['breath_tone'] },
+    { name: 'heart+breath', sounds: ['heartbeat', 'breath_tone'] },
+    { name: 'all', sounds: SOUND_NAMES.slice() },
+  ];
+  let soundModeIndex = 0;
+
+  // Sound gain nodes
+  const soundGains = {};
+
+  // Persistent nodes
+  let breathOsc = null;
+  let breathGain = null;
+  let rumbleOsc = null;
+  let rumbleGain = null;
+
+  // ── Config with localStorage persistence ──
+  const DEFAULT_CONFIG = {
+    hrToHeartbeatVol: 70,
+    rmssdToHeartbeatPitch: 50,
+    rmssdToRumbleVol: 60,
+    breathToTonePitch: 50,
+    stressToFilter: 50,
+    stressThreshold: 25,
+    recoveryThreshold: 40,
+  };
+
+  let soundConfig = Object.assign({}, DEFAULT_CONFIG);
+  try {
+    const saved = localStorage.getItem('hrv-sound-config');
+    if (saved) Object.assign(soundConfig, JSON.parse(saved));
+  } catch(e) {}
+
+  function saveConfig() {
+    try { localStorage.setItem('hrv-sound-config', JSON.stringify(soundConfig)); } catch(e) {}
+  }
+
+  // Init config panel sliders
+  document.querySelectorAll('#config-panel input[type=range]').forEach(slider => {
+    const key = slider.dataset.cfg;
+    if (soundConfig[key] !== undefined) {
+      slider.value = soundConfig[key];
+      slider.nextElementSibling.textContent = soundConfig[key];
+    }
+    slider.addEventListener('input', () => {
+      soundConfig[key] = parseInt(slider.value);
+      slider.nextElementSibling.textContent = slider.value;
+      saveConfig();
+    });
+  });
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    masterFilter = audioCtx.createBiquadFilter();
+    masterFilter.type = 'lowpass';
+    masterFilter.frequency.value = 20000;
+    masterFilter.Q.value = 0.7;
+
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 1.0;
+    masterFilter.connect(masterGain);
+    masterGain.connect(audioCtx.destination);
+
+    // Create individual gain nodes for each sound
+    for (const name of SOUND_NAMES) {
+      const g = audioCtx.createGain();
+      g.gain.value = 0.5;
+      g.connect(masterFilter);
+      soundGains[name] = g;
+    }
+
+    // Start persistent oscillators
+    startBreathOsc();
+    startRumbleOsc();
+  }
+
+  function startBreathOsc() {
+    if (!audioCtx) return;
+    breathOsc = audioCtx.createOscillator();
+    breathOsc.type = 'sine';
+    breathOsc.frequency.value = 330;
+    breathGain = audioCtx.createGain();
+    breathGain.gain.value = 0;
+    breathOsc.connect(breathGain);
+    breathGain.connect(soundGains.breath_tone);
+    breathOsc.start();
+  }
+
+  function startRumbleOsc() {
+    if (!audioCtx) return;
+    rumbleOsc = audioCtx.createOscillator();
+    rumbleOsc.type = 'sine';
+    rumbleOsc.frequency.value = 60;
+    rumbleGain = audioCtx.createGain();
+    rumbleGain.gain.value = 0;
+    rumbleOsc.connect(rumbleGain);
+    rumbleGain.connect(soundGains.stress_rumble);
+    rumbleOsc.start();
+  }
+
+  // Sound 1: Heartbeat — soft filtered noise burst
+  function playHeartbeat() {
+    if (!audioCtx || !soundEnabled.heartbeat) return;
+    const t = audioCtx.currentTime;
+
+    // Volume mapped from HR
+    const volScale = soundConfig.hrToHeartbeatVol / 100;
+    const hrNorm = Math.max(0, Math.min(1, (currentHR - 50) / 100));
+    const vol = 0.05 + hrNorm * 0.3 * volScale;
+
+    // Pitch mapped from RMSSD (lower RMSSD = lower pitch)
+    const pitchScale = soundConfig.rmssdToHeartbeatPitch / 100;
+    const rmssdNorm = Math.max(0, Math.min(1, currentRMSSD / 80));
+    const filterFreq = 200 + rmssdNorm * 600 * pitchScale;
+
+    // Create noise burst
+    const bufferSize = audioCtx.sampleRate * 0.06; // 60ms
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.15));
+    }
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = noiseBuffer;
+
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = filterFreq;
+    filter.Q.value = 3;
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(soundGains.heartbeat);
+    source.start(t);
+    source.stop(t + 0.1);
+  }
+
+  // Sound 2: Breath tone — continuous, modulated by pacer
+  function updateBreathTone() {
+    if (!audioCtx || !breathOsc || !breathGain) return;
+    if (!soundEnabled.breath_tone || soundMuted || activePattern === 'off') {
+      breathGain.gain.value = 0;
+      return;
+    }
+
+    const pitchScale = soundConfig.breathToTonePitch / 100;
+    // Map breath progress 0->1 to 220->440 Hz, scaled
+    const freq = 220 + breathProgress * 220 * pitchScale;
+    breathOsc.frequency.value = freq;
+
+    // Volume: gentle, louder during active breathing
+    const isActive = breathPhase === 'in' || breathPhase === 'out';
+    const targetVol = isActive ? 0.12 : 0.03;
+    breathGain.gain.value += (targetVol - breathGain.gain.value) * 0.1;
+  }
+
+  // Sound 3: Stress rumble — low freq when RMSSD drops
+  let rumbleActive = false;
+  function updateStressRumble() {
+    if (!audioCtx || !rumbleOsc || !rumbleGain) return;
+    const threshold = soundConfig.stressThreshold;
+    const volScale = soundConfig.rmssdToRumbleVol / 100;
+
+    if (!soundEnabled.stress_rumble || soundMuted || currentRMSSD <= 0) {
+      rumbleGain.gain.value *= 0.95;
+      rumbleActive = false;
+      return;
+    }
+
+    if (currentRMSSD < threshold) {
+      const intensity = Math.max(0, Math.min(1, (threshold - currentRMSSD) / threshold));
+      const targetVol = intensity * 0.2 * volScale;
+      rumbleGain.gain.value += (targetVol - rumbleGain.gain.value) * 0.05;
+      rumbleOsc.frequency.value = 50 + intensity * 30; // 50-80Hz
+      rumbleActive = true;
+    } else {
+      rumbleGain.gain.value *= 0.95;
+      if (rumbleGain.gain.value < 0.001) rumbleActive = false;
+    }
+  }
+
+  // Sound 4: Recovery chime — two ascending tones on recovery
+  function checkRecovery() {
+    if (!audioCtx || !soundEnabled.recovery_chime || soundMuted) return;
+    const stressThresh = soundConfig.stressThreshold;
+    const recoveryThresh = soundConfig.recoveryThreshold;
+
+    if (currentRMSSD > 0 && currentRMSSD < stressThresh && !wasStressed) {
+      wasStressed = true;
+      stressStartTime = performance.now() / 1000;
+    }
+
+    if (wasStressed && currentRMSSD >= recoveryThresh) {
+      // Must have been stressed for at least 5 seconds
+      if (performance.now() / 1000 - stressStartTime > 5) {
+        playRecoveryChime();
+      }
+      wasStressed = false;
+    }
+  }
+
+  function playRecoveryChime() {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+
+    // Two ascending tones
+    for (let i = 0; i < 2; i++) {
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = i === 0 ? 523 : 659; // C5, E5
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.15, t + i * 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.15 + 0.4);
+      osc.connect(gain);
+      gain.connect(soundGains.recovery_chime);
+      osc.start(t + i * 0.15);
+      osc.stop(t + i * 0.15 + 0.5);
+    }
+  }
+
+  // Sound 5: Marker click — short noise burst (called externally)
+  function playMarkerClick() {
+    if (!audioCtx || !soundEnabled.marker_click || soundMuted) return;
+    const t = audioCtx.currentTime;
+    const bufferSize = audioCtx.sampleRate * 0.01;
+    const buf = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      d[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.15, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+    src.connect(g);
+    g.connect(soundGains.marker_click);
+    src.start(t);
+    src.stop(t + 0.05);
+  }
+
+  // Sound 6: Stillness bell — gentle sine with exponential decay
+  let lastBellTime = 0;
+  function checkStillnessBell() {
+    if (!audioCtx || !soundEnabled.stillness_bell || soundMuted) return;
+    const now = performance.now() / 1000;
+    // Ring every 30s if stillness > 90%
+    if (stillnessPercent > 90 && now - lastBellTime > 30) {
+      playStillnessBell();
+      lastBellTime = now;
+    }
+  }
+
+  function playStillnessBell() {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 880; // A5
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 2.0);
+    osc.connect(g);
+    g.connect(soundGains.stillness_bell);
+    osc.start(t);
+    osc.stop(t + 2.5);
+  }
+
+  // Update master filter based on stress
+  function updateMasterFilter() {
+    if (!audioCtx || !masterFilter) return;
+    const filterScale = soundConfig.stressToFilter / 100;
+    const stress = stressFromRMSSD(currentRMSSD);
+    // More stressed = lower cutoff = more muffled
+    const cutoff = 20000 - stress * 18000 * filterScale;
+    masterFilter.frequency.value += (cutoff - masterFilter.frequency.value) * 0.05;
+  }
+
+  function applySoundMode() {
+    const mode = SOUND_MODES[soundModeIndex];
+    for (const name of SOUND_NAMES) {
+      soundEnabled[name] = mode.sounds.includes(name);
+    }
+  }
+
+  function updateSoundIndicator() {
+    const mode = SOUND_MODES[soundModeIndex];
+    let text = 'SND: ' + mode.name.toUpperCase();
+    if (soundMuted) text += ' [MUTED]';
+
+    // Show individual toggles
+    const toggles = SOUND_NAMES.map((name, i) => {
+      return (soundEnabled[name] ? '●' : '○') + (i+1);
+    }).join(' ');
+    soundIndicatorEl.innerHTML = text + '<br><span style="font-size:9px;opacity:0.6">' + toggles + '</span>';
+  }
+
+  // ── Keyboard controls ──
+  function handleKey(e) {
+    // Init audio on any keypress
+    initAudio();
+
+    const key = e.key.toLowerCase();
+    if (key === 's') {
+      soundModeIndex = (soundModeIndex + 1) % SOUND_MODES.length;
+      applySoundMode();
+      updateSoundIndicator();
+    } else if (key === 'm') {
+      soundMuted = !soundMuted;
+      if (masterGain) masterGain.gain.value = soundMuted ? 0 : 1;
+      updateSoundIndicator();
+    } else if (key === 'c') {
+      configPanel.classList.toggle('open');
+    } else if (key === 'a') {
+      // Toggle annotation bar
+      document.getElementById('anno-bar').classList.toggle('open');
+      if (document.getElementById('anno-bar').classList.contains('open')) {
+        document.getElementById('anno-input').focus();
+      }
+    } else if (key === 'e') {
+      // Toggle experiment panel
+      document.getElementById('experiment-panel').classList.toggle('open');
+    } else if (key >= '1' && key <= '6') {
+      if (document.getElementById('anno-bar').classList.contains('open')) return; // don't intercept when annotating
+      const idx = parseInt(key) - 1;
+      if (idx < SOUND_NAMES.length) {
+        soundEnabled[SOUND_NAMES[idx]] = !soundEnabled[SOUND_NAMES[idx]];
+        updateSoundIndicator();
+      }
+    }
+  }
+  document.addEventListener('keydown', handleKey);
+
+  // Resume AudioContext on any user gesture
+  function resumeAudio() {
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  document.addEventListener('click', resumeAudio);
+  document.addEventListener('keydown', resumeAudio);
+
+  // ── Annotations ──
+  const annotations = []; // {ts: seconds_since_start, label: string, comment: string}
+
+  document.querySelectorAll('#anno-bar .tag').forEach(el => {
+    el.addEventListener('click', () => {
+      const now_s = performance.now() / 1000 - startTs;
+      const label = el.dataset.tag;
+      annotations.push({ ts: now_s, label, comment: '', wallTime: new Date().toISOString() });
+      el.classList.add('active');
+      setTimeout(() => el.classList.remove('active'), 500);
+      playMarkerClick();
+      updateExpLog();
+    });
+  });
+
+  document.getElementById('anno-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const input = e.target;
+      const text = input.value.trim();
+      if (text) {
+        const now_s = performance.now() / 1000 - startTs;
+        annotations.push({ ts: now_s, label: 'note', comment: text, wallTime: new Date().toISOString() });
+        input.value = '';
+        playMarkerClick();
+        updateExpLog();
+      }
+    } else if (e.key === 'Escape') {
+      document.getElementById('anno-bar').classList.remove('open');
+    }
+    e.stopPropagation(); // don't trigger other shortcuts while typing
+  });
+
+  // ── Experiments ──
+  let activeExperiment = null; // {type, startTs, phases: [{name, ts, rmssd, hr}], baseline: {rmssd, hr}}
+
+  const EXP_TEMPLATES = {
+    breathing: { phases: ['baseline', 'breathing', 'recovery'], durations: [120, 300, 120] },
+    exercise: { phases: ['baseline', 'exercise', 'recovery'], durations: [60, 60, 180] },
+    substance: { phases: ['baseline', 'intake', 'effect', 'recovery'], durations: [120, 10, 600, 300] },
+    custom: { phases: ['baseline', 'intervention', 'recovery'], durations: [120, 300, 120] },
+  };
+
+  document.querySelectorAll('#experiment-panel .exp-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const type = el.dataset.exp;
+      if (activeExperiment && activeExperiment.type === type) {
+        // Advance to next phase
+        advanceExperiment();
+        return;
+      }
+      startExperiment(type);
+      document.querySelectorAll('.exp-btn').forEach(b => b.classList.remove('running'));
+      el.classList.add('running');
+    });
+  });
+
+  function startExperiment(type) {
+    const now_s = performance.now() / 1000 - startTs;
+    const template = EXP_TEMPLATES[type];
+    activeExperiment = {
+      type,
+      startTs: now_s,
+      phaseIndex: 0,
+      phases: template.phases.map((name, i) => ({
+        name, targetDuration: template.durations[i],
+        startTs: i === 0 ? now_s : null,
+        endTs: null,
+        startRMSSD: i === 0 ? currentRMSSD : null,
+        startHR: i === 0 ? currentHR : null,
+        endRMSSD: null, endHR: null,
+      })),
+    };
+    annotations.push({ ts: now_s, label: `exp:${type}:start`, comment: '', wallTime: new Date().toISOString() });
+    document.getElementById('exp-status').textContent = `${type}: ${template.phases[0]} (click again to advance)`;
+    updateExpLog();
+  }
+
+  function advanceExperiment() {
+    if (!activeExperiment) return;
+    const now_s = performance.now() / 1000 - startTs;
+    const phase = activeExperiment.phases[activeExperiment.phaseIndex];
+    phase.endTs = now_s;
+    phase.endRMSSD = currentRMSSD;
+    phase.endHR = currentHR;
+    annotations.push({ ts: now_s, label: `exp:${activeExperiment.type}:${phase.name}:end`, comment: '', wallTime: new Date().toISOString() });
+
+    activeExperiment.phaseIndex++;
+    if (activeExperiment.phaseIndex >= activeExperiment.phases.length) {
+      // Experiment complete
+      document.getElementById('exp-status').innerHTML = formatExperimentResults();
+      document.querySelectorAll('.exp-btn').forEach(b => b.classList.remove('running'));
+      activeExperiment = null;
+    } else {
+      const next = activeExperiment.phases[activeExperiment.phaseIndex];
+      next.startTs = now_s;
+      next.startRMSSD = currentRMSSD;
+      next.startHR = currentHR;
+      document.getElementById('exp-status').textContent =
+        `${activeExperiment.type}: ${next.name} (click to advance)`;
+    }
+    updateExpLog();
+  }
+
+  function formatExperimentResults() {
+    if (!activeExperiment && annotations.length === 0) return 'No experiment data';
+    // Find last completed experiment in annotations
+    const phases = annotations.filter(a => a.label.startsWith('exp:')).slice(-10);
+    let html = '<div style="color:rgba(78,205,196,0.7)">Experiment complete</div>';
+    return html;
+  }
+
+  function updateExpLog() {
+    const log = document.getElementById('exp-log');
+    const recent = annotations.slice(-20);
+    log.innerHTML = recent.map(a => {
+      const mins = (a.ts / 60).toFixed(1);
+      const comment = a.comment ? ` — ${a.comment}` : '';
+      return `<div class="entry"><span class="t">${mins}m</span> ${a.label}${comment}</div>`;
+    }).join('');
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // ── Export ──
+  document.getElementById('export-btn').addEventListener('click', () => {
+    resumeAudio();
+    exportSession();
+  });
+
+  function exportSession() {
+    const data = {
+      exported_at: new Date().toISOString(),
+      duration_s: performance.now() / 1000 - startTs,
+      annotations,
+      rmssd_history: rmssdHistory.map(h => ({ ts: h.ts.toFixed(2), rmssd: h.rmssd.toFixed(1) })),
+      hr_history: hrHistory.map(h => ({ ts: h.ts.toFixed(2), hr: h.hr })),
+      rr_intervals: rrIntervals.slice(),
+      summary: {
+        avg_rmssd: currentRMSSD.toFixed(1),
+        avg_hr: currentHR,
+        sdnn: currentSDNN.toFixed(1),
+        coherence: coherenceScore.toFixed(2),
+        total_annotations: annotations.length,
+      },
+    };
+
+    // Download as JSON
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `hrv-session-${new Date().toISOString().slice(0,16).replace(':','-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Also copy summary to clipboard
+    const summary = `HRV Session ${new Date().toLocaleString()}\nRMSSD: ${data.summary.avg_rmssd}ms | HR: ${data.summary.avg_hr} | SDNN: ${data.summary.sdnn} | Coherence: ${data.summary.coherence}\nAnnotations: ${annotations.length} | Duration: ${(data.duration_s/60).toFixed(0)} min`;
+    navigator.clipboard.writeText(summary).catch(() => {});
+  }
+
+  // Draw annotations on timeline
+  function drawAnnotations(ctx, w, h, toX) {
+    for (const a of annotations) {
+      const x = toX(a.ts);
+      if (x < 0 || x > w) continue;
+      ctx.strokeStyle = a.label.startsWith('exp:') ? 'rgba(78,205,196,0.4)' : 'rgba(255,200,100,0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Label
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.font = '8px monospace';
+      const label = a.comment || a.label;
+      ctx.save();
+      ctx.translate(x + 3, 14);
+      ctx.fillText(label.slice(0, 20), 0, 0);
+      ctx.restore();
+    }
   }
 
   // ── WebSocket ──
@@ -393,7 +1243,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
               rrTimestamps.push(now_s);
               if (rrIntervals.length > RR_MAX) { rrIntervals.shift(); rrTimestamps.shift(); }
 
-              // Poincare
               if (rrIntervals.length >= 2) {
                 const n = rrIntervals.length;
                 poincarePoints.push({
@@ -411,6 +1260,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
               coherenceScore = computeCoherence(rrIntervals);
               rmssdHistory.push({ ts: now_s, rmssd: currentRMSSD });
               if (rmssdHistory.length > RMSSD_MAX) rmssdHistory.shift();
+
+              checkRecovery();
             }
           }
         }
@@ -420,14 +1271,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
             ecgBuffer.push(s);
             if (ecgBuffer.length > ECG_MAX) ecgBuffer.shift();
           }
+          detectRPeaks();
         }
 
         if (d.type === 'acc' && d.samples) {
           for (const s of d.samples) {
-            accZBuffer.push(s[2]); // Z-axis
+            accBuffer.push(s);
+            if (accBuffer.length > ACC_MAX) accBuffer.shift();
+            accZBuffer.push(s[2]);
             if (accZBuffer.length > ACC_MAX) accZBuffer.shift();
           }
           currentBreathRate = estimateBreathRate(accZBuffer);
+          updateMovement();
         }
       } catch (err) { /* ignore parse errors */ }
     };
@@ -496,7 +1351,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     const stress = stressFromRMSSD(currentRMSSD);
     const [cr, cg, cb] = lerpColor(stress);
 
-    // Outer glow ring
     const alpha = 0.08 + breathProgress * 0.18;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -504,13 +1358,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Inner fill
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.03 + breathProgress * 0.06})`;
     ctx.fill();
 
-    // Countdown text
     const labels = { in: 'IN', out: 'OUT', hold: 'HOLD', hold_out: 'HOLD' };
     ctx.fillStyle = `rgba(255,255,255,${0.3 + breathProgress * 0.2})`;
     ctx.font = '22px "SF Mono", Menlo, monospace';
@@ -535,7 +1387,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     const plotW = c.w - pad * 2;
     const plotH = c.h - pad * 2;
 
-    // Auto-range
     let minRR = Infinity, maxRR = -Infinity;
     for (const p of poincarePoints) {
       minRR = Math.min(minRR, p.x, p.y);
@@ -564,25 +1415,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     const step = Math.max(50, Math.round((maxRR - minRR) / 5 / 50) * 50);
     for (let v = Math.ceil(minRR / step) * step; v <= maxRR; v += step) {
       ctx.fillText(v, toX(v), c.h - pad + 14);
-      // Y-axis
       ctx.textAlign = 'right';
       ctx.fillText(v, pad - 6, toY(v) + 3);
       ctx.textAlign = 'center';
     }
 
-    // Axis labels
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
     ctx.font = '8px monospace';
     ctx.textAlign = 'center';
     ctx.fillText('RR(n) ms', c.w / 2, c.h - 4);
 
-    // Dots
     const oldestT = poincarePoints[0].t;
     const newestT = poincarePoints[poincarePoints.length - 1].t;
     const timeRange = Math.max(1, newestT - oldestT);
 
     for (const p of poincarePoints) {
-      const age = (p.t - oldestT) / timeRange; // 0 = oldest, 1 = newest
+      const age = (p.t - oldestT) / timeRange;
       const stress = stressFromRMSSD(currentRMSSD);
       const [cr, cg, cb] = lerpColor(stress);
       const alpha = 0.08 + age * 0.72;
@@ -615,11 +1463,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
 
     function toX(ts) { return pad.left + ((ts - tStart) / zoomSeconds) * plotW; }
 
-    // HR axis (left): 40-200
     const hrMin = 40, hrMax = 200;
     function toYhr(hr) { return pad.top + plotH - ((Math.min(hrMax, Math.max(hrMin, hr)) - hrMin) / (hrMax - hrMin)) * plotH; }
 
-    // RMSSD axis (right): 0-120
     const rmssdMin = 0, rmssdMax = 120;
     function toYrmssd(v) { return pad.top + plotH - ((Math.min(rmssdMax, Math.max(rmssdMin, v)) - rmssdMin) / (rmssdMax - rmssdMin)) * plotH; }
 
@@ -663,7 +1509,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     ctx.fillText('RMSSD ms', 0, 0);
     ctx.restore();
 
-    // Breathing guide wave (faint)
+    // Stress rumble tint on RMSSD timeline
+    if (rumbleActive && soundEnabled.stress_rumble) {
+      ctx.fillStyle = 'rgba(180,40,40,0.06)';
+      ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    }
+
+    // Breathing guide wave
     if (PATTERNS[activePattern]) {
       ctx.beginPath();
       let first = true;
@@ -694,7 +1546,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
         lastX = x;
       }
       if (started) {
-        // Close for fill
         const firstVisible = rmssdHistory.find(p => p.ts >= tStart);
         ctx.lineTo(lastX, pad.top + plotH);
         ctx.lineTo(toX(firstVisible ? firstVisible.ts : tStart), pad.top + plotH);
@@ -705,7 +1556,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
         ctx.fillStyle = grad;
         ctx.fill();
 
-        // RMSSD line
         ctx.beginPath();
         started = false;
         for (const pt of rmssdHistory) {
@@ -730,15 +1580,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
         if (pt.ts < tStart) continue;
         const x = toX(pt.ts);
         const y = toYhr(pt.hr);
-        if (!started) { ctx.moveTo(x, y); started = true; }
+        if (!started) { ctx.moveTo(x, y); started = false; }
         else ctx.lineTo(x, y);
+        started = true;
       }
       ctx.strokeStyle = 'rgba(220,80,80,0.7)';
       ctx.lineWidth = 1.5;
       ctx.lineJoin = 'round';
       ctx.stroke();
 
-      // Current marker
       if (hrHistory.length > 0) {
         const last = hrHistory[hrHistory.length - 1];
         if (last.ts >= tStart) {
@@ -760,6 +1610,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
         ctx.fill();
       }
     }
+
+    // Annotations on timeline
+    drawAnnotations(ctx, c.w, c.h, toX);
   }
 
   function drawEcg() {
@@ -776,14 +1629,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
       return;
     }
 
-    const pad = { top: 20, right: 10, bottom: 10, left: 10 };
-    const plotW = c.w - pad.left - pad.right;
-    const plotH = c.h - pad.top - pad.bottom;
+    const padT = 28, padR = 10, padB = 10, padL = 10;
+    const plotW = c.w - padL - padR;
+    const plotH = c.h - padT - padB;
 
-    // ~3 seconds at 130Hz = 390 samples
-    const visible = ecgBuffer.slice(-390);
+    // ~4 seconds at 130Hz = 520 samples
+    const visible = ecgBuffer.slice(-520);
+    const bufferOffset = Math.max(0, ecgBuffer.length - 520);
 
-    // Auto-range
     let minV = Infinity, maxV = -Infinity;
     for (const v of visible) {
       if (v < minV) minV = v;
@@ -792,19 +1645,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     const range = Math.max(maxV - minV, 50);
     const mid = (maxV + minV) / 2;
 
-    function toX(i) { return pad.left + (i / (visible.length - 1)) * plotW; }
-    function toY(v) { return pad.top + plotH / 2 - ((v - mid) / range) * plotH * 0.85; }
+    function toX(i) { return padL + (i / (visible.length - 1)) * plotW; }
+    function toY(v) { return padT + plotH / 2 - ((v - mid) / range) * plotH * 0.85; }
 
     // Faint grid
     ctx.strokeStyle = 'rgba(0,180,80,0.06)';
     ctx.lineWidth = 0.5;
-    for (let y = pad.top; y <= pad.top + plotH; y += plotH / 4) {
-      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + plotW, y); ctx.stroke();
+    for (let y = padT; y <= padT + plotH; y += plotH / 4) {
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
     }
     const gridStep = visible.length / 6;
     for (let i = 0; i < visible.length; i += gridStep) {
       const x = toX(i);
-      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + plotH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
     }
 
     // ECG waveform
@@ -820,22 +1673,79 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     ctx.lineJoin = 'round';
     ctx.stroke();
 
-    // Scanline glow at the end
+    // R-peak markers (small red triangles/dots)
+    ctx.fillStyle = 'rgba(220,60,60,0.7)';
+    for (const peakIdx of rPeakIndices) {
+      const localIdx = peakIdx - bufferOffset;
+      if (localIdx < 0 || localIdx >= visible.length) continue;
+      const x = toX(localIdx);
+      const y = toY(visible[localIdx]);
+      // Small downward triangle above peak
+      ctx.beginPath();
+      ctx.moveTo(x, y - 8);
+      ctx.lineTo(x - 3, y - 14);
+      ctx.lineTo(x + 3, y - 14);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Heartbeat red dot indicator on latest peak
+    if (soundEnabled.heartbeat && rPeakIndices.length > 0) {
+      const lastPeak = rPeakIndices[rPeakIndices.length - 1];
+      const localIdx = lastPeak - bufferOffset;
+      if (localIdx >= 0 && localIdx < visible.length) {
+        ctx.beginPath();
+        ctx.arc(toX(localIdx), toY(visible[localIdx]), 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,40,40,0.8)';
+        ctx.fill();
+      }
+    }
+
+    // Scanline glow
     const headX = toX(visible.length - 1);
     const grad = ctx.createLinearGradient(headX - 30, 0, headX, 0);
     grad.addColorStop(0, 'rgba(0,220,80,0)');
     grad.addColorStop(1, 'rgba(0,220,80,0.15)');
     ctx.fillStyle = grad;
-    ctx.fillRect(headX - 30, pad.top, 30, plotH);
+    ctx.fillRect(headX - 30, padT, 30, plotH);
+
+    // Instantaneous HR from R-peaks (top-right of ECG panel)
+    if (rPeakHR > 0) {
+      ctx.fillStyle = 'rgba(220,80,80,0.5)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(rPeakHR + ' bpm (R-R)', c.w - 10, 16);
+    }
+
+    // Mini HR trend line (last 30s, top strip)
+    if (rPeakHRHistory.length >= 2) {
+      const trendH = 18;
+      const trendY0 = 4;
+      const recentHR = rPeakHRHistory.slice(-60);
+      let hrMin = Infinity, hrMax = -Infinity;
+      for (const p of recentHR) { if (p.hr < hrMin) hrMin = p.hr; if (p.hr > hrMax) hrMax = p.hr; }
+      const hrRange = Math.max(hrMax - hrMin, 10);
+
+      ctx.beginPath();
+      for (let i = 0; i < recentHR.length; i++) {
+        const x = padL + (i / (recentHR.length - 1)) * plotW * 0.4; // use left 40% of panel
+        const y = trendY0 + trendH - ((recentHR[i].hr - hrMin) / hrRange) * trendH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(220,80,80,0.25)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
   }
 
-  function drawBreathWave(now_s) {
-    const c = cBreath;
+  function drawMovement(now_s) {
+    const c = cMovement;
     const ctx = c.ctx;
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, c.w, c.h);
 
-    if (accZBuffer.length < 50) {
+    if (accBuffer.length < 50) {
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
@@ -843,44 +1753,58 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
       return;
     }
 
-    const pad = { top: 20, right: 10, bottom: 16, left: 10 };
-    const plotW = c.w - pad.left - pad.right;
-    const plotH = c.h - pad.top - pad.bottom;
+    const padT = 20, padR = 10, padB = 24, padL = 10;
+    const plotW = c.w - padL - padR;
+    const totalH = c.h - padT - padB;
 
-    // Smooth Z-axis heavily for breathing wave
+    // Split panel: top 55% = breathing wave, bottom 45% = raw ACC + magnitude
+    const breathH = totalH * 0.50;
+    const accH = totalH * 0.42;
+    const gapH = totalH * 0.08;
+
+    // ── Breathing wave (smoothed Z-axis) ──
+    const breathTop = padT;
     const win = 15;
-    const smoothed = [];
+    const smoothedZ = [];
     for (let i = 0; i < accZBuffer.length; i++) {
       let s = 0, count = 0;
       for (let j = Math.max(0, i - win); j <= Math.min(accZBuffer.length - 1, i + win); j++) {
         s += accZBuffer[j]; count++;
       }
-      smoothed.push(s / count);
+      smoothedZ.push(s / count);
     }
 
-    // Show last ~250 samples (~5 seconds at 50Hz)
-    const visible = smoothed.slice(-250);
-
-    let minV = Infinity, maxV = -Infinity;
-    for (const v of visible) {
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
+    const visibleBreath = smoothedZ.slice(-250);
+    let bMinV = Infinity, bMaxV = -Infinity;
+    for (const v of visibleBreath) {
+      if (v < bMinV) bMinV = v;
+      if (v > bMaxV) bMaxV = v;
     }
-    const range = Math.max(maxV - minV, 10);
-    const mid = (maxV + minV) / 2;
+    const bRange = Math.max(bMaxV - bMinV, 10);
+    const bMid = (bMaxV + bMinV) / 2;
 
-    function toX(i) { return pad.left + (i / (visible.length - 1)) * plotW; }
-    function toY(v) { return pad.top + plotH / 2 - ((v - mid) / range) * plotH * 0.8; }
+    function bToX(i) { return padL + (i / (visibleBreath.length - 1)) * plotW; }
+    function bToY(v) { return breathTop + breathH / 2 - ((v - bMid) / bRange) * breathH * 0.8; }
 
-    // Waveform
+    // Breath tone pitch gradient band (subtle)
+    if (soundEnabled.breath_tone && PATTERNS[activePattern]) {
+      for (let px = 0; px < plotW; px += 3) {
+        const frac = px / plotW;
+        const pitchNorm = Math.sin(frac * Math.PI * 3) * 0.5 + 0.5; // approximate
+        const alpha = 0.03 + pitchNorm * 0.04;
+        ctx.fillStyle = `rgba(180,160,80,${alpha})`;
+        ctx.fillRect(padL + px, breathTop, 3, breathH);
+      }
+    }
+
+    // Breathing waveform
     ctx.beginPath();
-    for (let i = 0; i < visible.length; i++) {
-      const x = toX(i);
-      const y = toY(visible[i]);
+    for (let i = 0; i < visibleBreath.length; i++) {
+      const x = bToX(i);
+      const y = bToY(visibleBreath[i]);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-
     const stress = stressFromRMSSD(currentRMSSD);
     const [cr, cg, cb] = lerpColor(stress);
     ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.5)`;
@@ -888,25 +1812,142 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     ctx.lineJoin = 'round';
     ctx.stroke();
 
-    // Fill below
-    if (visible.length > 1) {
-      ctx.lineTo(toX(visible.length - 1), pad.top + plotH);
-      ctx.lineTo(toX(0), pad.top + plotH);
+    // Fill below breathing
+    if (visibleBreath.length > 1) {
+      ctx.lineTo(bToX(visibleBreath.length - 1), breathTop + breathH);
+      ctx.lineTo(bToX(0), breathTop + breathH);
       ctx.closePath();
-      const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+      const grad = ctx.createLinearGradient(0, breathTop, 0, breathTop + breathH);
       grad.addColorStop(0, `rgba(${cr},${cg},${cb},0.08)`);
       grad.addColorStop(1, `rgba(${cr},${cg},${cb},0.01)`);
       ctx.fillStyle = grad;
       ctx.fill();
     }
 
-    // Breath rate label
+    // Separator line
+    const accTop = breathTop + breathH + gapH;
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, accTop - gapH/2);
+    ctx.lineTo(padL + plotW, accTop - gapH/2);
+    ctx.stroke();
+
+    // ── Raw accelerometer XYZ + magnitude ──
+    const visibleAcc = accBuffer.slice(-250);
+    if (visibleAcc.length < 2) return;
+
+    // Find range across all axes
+    let aMin = Infinity, aMax = -Infinity;
+    let magMin = Infinity, magMax = -Infinity;
+    const mags = [];
+    for (const [x, y, z] of visibleAcc) {
+      aMin = Math.min(aMin, x, y, z);
+      aMax = Math.max(aMax, x, y, z);
+      const m = Math.sqrt(x*x + y*y + z*z);
+      mags.push(m);
+      magMin = Math.min(magMin, m);
+      magMax = Math.max(magMax, m);
+    }
+    const aRange = Math.max(aMax - aMin, 100);
+    const aMid = (aMax + aMin) / 2;
+    const magRange = Math.max(magMax - magMin, 50);
+    const magMid = (magMax + magMin) / 2;
+
+    function aToX(i) { return padL + (i / (visibleAcc.length - 1)) * plotW; }
+    function aToY(v) { return accTop + accH / 2 - ((v - aMid) / aRange) * accH * 0.8; }
+    function mToY(v) { return accTop + accH / 2 - ((v - magMid) / magRange) * accH * 0.8; }
+
+    // X axis (muted red)
+    ctx.beginPath();
+    for (let i = 0; i < visibleAcc.length; i++) {
+      const x = aToX(i);
+      const y = aToY(visibleAcc[i][0]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(200,80,80,0.25)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Y axis (muted green)
+    ctx.beginPath();
+    for (let i = 0; i < visibleAcc.length; i++) {
+      const x = aToX(i);
+      const y = aToY(visibleAcc[i][1]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(80,200,80,0.25)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Z axis (muted blue)
+    ctx.beginPath();
+    for (let i = 0; i < visibleAcc.length; i++) {
+      const x = aToX(i);
+      const y = aToY(visibleAcc[i][2]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(80,80,200,0.25)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Magnitude (thicker white-ish line)
+    ctx.beginPath();
+    for (let i = 0; i < mags.length; i++) {
+      const x = aToX(i);
+      const y = mToY(mags[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // ── Labels ──
+    // Breath rate
     if (currentBreathRate > 3 && currentBreathRate < 40) {
       ctx.fillStyle = 'rgba(255,255,255,0.2)';
       ctx.font = '10px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(currentBreathRate.toFixed(1) + ' br/min', c.w - 10, c.h - 4);
+      ctx.fillText(currentBreathRate.toFixed(1) + ' br/min', c.w - 10, breathTop + 14);
     }
+
+    // Stillness bar
+    const barW = 60, barH = 6;
+    const barX = c.w - padR - barW;
+    const barY = c.h - padB + 6;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(barX, barY, barW, barH);
+    const fillW = (stillnessPercent / 100) * barW;
+    const stillColor = stillnessPercent > 80 ? 'rgba(80,200,120,0.4)' :
+                       stillnessPercent > 40 ? 'rgba(200,180,60,0.4)' : 'rgba(200,80,60,0.4)';
+    ctx.fillStyle = stillColor;
+    ctx.fillRect(barX, barY, fillW, barH);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('still ' + stillnessPercent.toFixed(0) + '%', barX - 4, barY + 5);
+
+    // Step count
+    if (stepCount > 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(stepCount + ' steps', padL, c.h - padB + 11);
+    }
+
+    // Axis legend
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'left';
+    const legendY = accTop - 2;
+    ctx.fillStyle = 'rgba(200,80,80,0.35)'; ctx.fillText('X', padL, legendY);
+    ctx.fillStyle = 'rgba(80,200,80,0.35)'; ctx.fillText('Y', padL + 12, legendY);
+    ctx.fillStyle = 'rgba(80,80,200,0.35)'; ctx.fillText('Z', padL + 24, legendY);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillText('|A|', padL + 36, legendY);
   }
 
   // ── Metrics overlay ──
@@ -919,12 +1960,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
       lines.push(`RESP   ${currentBreathRate.toFixed(1)} /min`);
     }
     lines.push(`COH    ${coherenceScore.toFixed(1)}`);
+    if (stillnessPercent > 0) {
+      lines.push(`STILL  ${stillnessPercent.toFixed(0)}%`);
+    }
+    if (stepCount > 0) {
+      lines.push(`STEPS  ${stepCount}`);
+    }
     metricsEl.textContent = lines.join('\n');
     metricsEl.style.whiteSpace = 'pre';
   }
 
   // ── Main loop ──
   let lastMetricsUpdate = 0;
+  let lastSoundUpdate = 0;
 
   function frame(time) {
     const now_s = time / 1000;
@@ -934,11 +1982,21 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; f
     drawPoincare(now_s);
     drawTimeline(now_s);
     drawEcg();
-    drawBreathWave(now_s);
+    drawMovement(now_s);
 
-    // Metrics at ~4fps to avoid layout thrash
+    // Sound updates at ~30fps
+    if (time - lastSoundUpdate > 33) {
+      updateBreathTone();
+      updateStressRumble();
+      updateMasterFilter();
+      checkStillnessBell();
+      lastSoundUpdate = time;
+    }
+
+    // Metrics at ~4fps
     if (time - lastMetricsUpdate > 250) {
       updateMetrics();
+      updateSoundIndicator();
       lastMetricsUpdate = time;
     }
 
