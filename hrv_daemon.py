@@ -25,6 +25,31 @@ WS_URL = "ws://localhost:8765"
 HUE_CONFIG = os.path.expanduser("~/.config/hue/config.json")
 DEFAULT_DB = os.path.expanduser("~/ai_projects/polar-h10-ribbon/hrv_data.db")
 
+# Light presets: define how Hue lights behave
+# Each preset specifies which lights to use and their behavior
+LIGHT_PRESETS = {
+    "gradient": {
+        "description": "Warm→cool gradient based on HRV (default)",
+        "behavior": "gradient",  # near=red, far=blue based on RMSSD
+    },
+    "heartbeat": {
+        "description": "All lights flash with your heartbeat",
+        "behavior": "heartbeat",  # all lights pulse on each beat
+    },
+    "movement": {
+        "description": "React to rapid movement with flashes",
+        "behavior": "movement",  # flash on sudden acceleration
+    },
+    "heartbeat+movement": {
+        "description": "Heartbeat pulse + movement reaction",
+        "behavior": "heartbeat+movement",
+    },
+    "ambient": {
+        "description": "Slow breathing, minimal reaction",
+        "behavior": "ambient",
+    },
+}
+
 
 # === DATABASE ===
 
@@ -462,6 +487,11 @@ class MovementTracker:
     STILL_THRESHOLD: float = 0.85
     STILL_ALERT_MINUTES: float = 30.0
 
+    # movement spike detection
+    mag_baseline: float = 1.0
+    spike_intensity: float = 0.0  # 0-1, decays over time
+    last_spike: float = 0.0
+
     def add_acc_samples(self, samples: list, now: float):
         for x, y, z in samples:
             mag = math.sqrt(x*x + y*y + z*z) / 1000.0  # normalize to g
@@ -475,6 +505,16 @@ class MovementTracker:
         self.magnitude = sum(recent) / len(recent)
         deviations = [abs(m - 1.0) for m in recent]
         self.stillness = max(0, 1.0 - sum(deviations) / len(deviations) * 10)
+
+        # movement spike: detect sudden acceleration bursts
+        self.mag_baseline = self.mag_baseline * 0.99 + self.magnitude * 0.01
+        instant_mag = sum(list(self.mag_buffer)[-10:]) / 10 if len(self.mag_buffer) >= 10 else 1.0
+        spike = max(0, abs(instant_mag - self.mag_baseline) - 0.02) * 10  # threshold 0.02g
+        if spike > self.spike_intensity:
+            self.spike_intensity = min(1.0, spike)
+            self.last_spike = now
+        else:
+            self.spike_intensity *= 0.9  # decay
 
         # breath from Z-axis (simplified)
         if samples:
@@ -1062,6 +1102,39 @@ class HueBridge:
         except Exception:
             pass
 
+    def flash_all(self, bri: int, hue_val: int = 0, sat: int = 254, transition: int = 1):
+        """Flash all lights to a state with fast transition (for heartbeat)."""
+        now = time.time()
+        if now - self.last_update < 0.15:
+            return
+        self.last_update = now
+        state = {"on": True, "hue": hue_val, "sat": sat, "bri": max(1, bri), "transitiontime": transition}
+        try:
+            if self.lights:
+                for lid in self.lights:
+                    self._api("PUT", f"/lights/{lid}/state", state)
+            else:
+                self._api("PUT", f"/groups/{self.group}/action", state)
+        except Exception:
+            pass
+
+    def movement_flash(self, intensity: float):
+        """Flash white on rapid movement. intensity 0-1."""
+        now = time.time()
+        if now - self.last_update_b < 0.3:
+            return
+        self.last_update_b = now
+        bri = max(1, int(intensity * 254))
+        state = {"on": True, "hue": 0, "sat": 0, "bri": bri, "transitiontime": 1}
+        try:
+            if self.lights:
+                for lid in self.lights:
+                    self._api("PUT", f"/lights/{lid}/state", state)
+            else:
+                self._api("PUT", f"/groups/{self.group}/action", state)
+        except Exception:
+            pass
+
     def _api(self, method, path, body=None):
         url = f"http://{self.cfg['bridge']}/api/{self.cfg['username']}{path}"
         data = json.dumps(body).encode() if body is not None else None
@@ -1297,20 +1370,54 @@ async def run(args):
                                 )
                                 db.commit()
 
-                            # Update Hue lights (slow, 0.5s)
+                            # Update Hue lights based on preset
                             if now - last_light_update >= 0.5:
                                 last_light_update = now
                                 light.update(hrv, movement)
-                                if hue_ok:
-                                    if hue.lights:
-                                        states = light.hue_gradient_states(t, hrv.drop_intensity, len(hue.lights))
-                                        hue.set_gradient(states)
-                                    else:
-                                        hue.set_state(light.hue_api_state(t))
+                                preset_behavior = LIGHT_PRESETS.get(args.preset, {}).get("behavior", "gradient")
 
-                            # Buzzer: flash on each heartbeat
+                                if hue_ok:
+                                    if "heartbeat" in preset_behavior:
+                                        # Heartbeat: handled per-beat below
+                                        pass
+                                    elif preset_behavior == "movement":
+                                        # Movement only: react to spikes
+                                        if movement.spike_intensity > 0.1:
+                                            hue.movement_flash(movement.spike_intensity)
+                                    elif preset_behavior == "ambient":
+                                        # Slow breathing glow
+                                        hue.set_state(light.hue_api_state(t))
+                                    else:
+                                        # Default: gradient
+                                        if hue.lights:
+                                            states = light.hue_gradient_states(t, hrv.drop_intensity, len(hue.lights))
+                                            hue.set_gradient(states)
+                                        else:
+                                            hue.set_state(light.hue_api_state(t))
+
+                            # Heartbeat flash on Hue (per-beat, fast)
                             if buzzer_ok and not buzzer.pressed:
                                 last_beat_time = now
+
+                            preset_behavior = LIGHT_PRESETS.get(args.preset, {}).get("behavior", "gradient")
+                            if hue_ok and "heartbeat" in preset_behavior:
+                                # Flash all lights on beat, dim between
+                                elapsed_beat = now - last_beat_time
+                                expected = 60.0 / max(40, hrv.hr_from_rr) if hrv.hr_from_rr > 0 else 1.0
+                                phase = elapsed_beat / expected
+                                if phase < 0.1:
+                                    beat_bri = int(200 + 54 * (1 - phase / 0.1))
+                                elif phase < 0.4:
+                                    beat_bri = int(200 * (1 - (phase - 0.1) / 0.3))
+                                else:
+                                    beat_bri = max(5, int(30 * math.exp(-(phase - 0.4) * 3)))
+                                drop = hrv.drop_intensity
+                                hue_val = int(drop * 46920)  # red→blue
+                                hue.flash_all(beat_bri, hue_val, 254, 1)
+
+                            # Movement flash (if preset includes movement)
+                            if hue_ok and "movement" in preset_behavior and movement.spike_intensity > 0.15:
+                                hue.movement_flash(movement.spike_intensity)
 
                                 # Console
                                 r, g, b = light.rgb
@@ -1465,6 +1572,8 @@ def main():
                         help="training=reactive, monitor=subtle+alerts, focus=minimal")
     parser.add_argument("--lights", default=None,
                         help="Comma-separated light IDs for dual mode (e.g. 2,3)")
+    parser.add_argument("--preset", choices=list(LIGHT_PRESETS.keys()), default="gradient",
+                        help="Light behavior preset")
     args = parser.parse_args()
 
     try:
