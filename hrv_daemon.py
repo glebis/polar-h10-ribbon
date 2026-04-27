@@ -102,9 +102,39 @@ def init_db(path: str) -> sqlite3.Connection:
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         );
 
+        CREATE TABLE IF NOT EXISTS hrv_advanced (
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            ts REAL NOT NULL,
+            ln_rmssd REAL,
+            dfa_alpha1 REAL,
+            sample_entropy REAL,
+            sd1 REAL,
+            sd2 REAL,
+            pnn50 REAL,
+            hf_power REAL,
+            lf_power REAL,
+            vlf_power REAL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_baselines (
+            id INTEGER PRIMARY KEY,
+            date TEXT NOT NULL UNIQUE,
+            ln_rmssd_mean REAL,
+            ln_rmssd_cv REAL,
+            rmssd_mean REAL,
+            hr_mean REAL,
+            dfa_alpha1_mean REAL,
+            sample_entropy_mean REAL,
+            z_score REAL,
+            notes TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_rr_ts ON rr_intervals(ts);
         CREATE INDEX IF NOT EXISTS idx_hrv_ts ON hrv_samples(ts);
         CREATE INDEX IF NOT EXISTS idx_move_ts ON movement_samples(ts);
+        CREATE INDEX IF NOT EXISTS idx_adv_ts ON hrv_advanced(ts);
     """)
     conn.commit()
     return conn
@@ -215,6 +245,155 @@ class HRVEngine:
                     "baseline_at_event": self.baseline_rmssd,
                 }
         return None
+
+
+# === ADVANCED HRV ANALYSIS ===
+
+def compute_dfa_alpha1(rr_intervals: list[int], min_box=4, max_box=16) -> float | None:
+    """Detrended Fluctuation Analysis — short-term scaling exponent.
+    α1 ≈ 1.0 = healthy fractal, < 0.75 = high risk, > 1.5 = rigid."""
+    n = len(rr_intervals)
+    if n < max_box * 4:
+        return None
+    # Integrate the mean-subtracted series
+    mean_rr = sum(rr_intervals) / n
+    y = []
+    cumsum = 0
+    for rr in rr_intervals:
+        cumsum += (rr - mean_rr)
+        y.append(cumsum)
+    # Compute fluctuation for each box size
+    box_sizes = []
+    fluctuations = []
+    box = min_box
+    while box <= max_box:
+        num_boxes = n // box
+        if num_boxes < 2:
+            break
+        f_sum = 0
+        count = 0
+        for i in range(num_boxes):
+            seg = y[i * box:(i + 1) * box]
+            # Linear detrend
+            x_mean = (box - 1) / 2.0
+            y_mean = sum(seg) / box
+            num = sum((j - x_mean) * (seg[j] - y_mean) for j in range(box))
+            den = sum((j - x_mean) ** 2 for j in range(box))
+            if den == 0:
+                continue
+            slope = num / den
+            intercept = y_mean - slope * x_mean
+            for j in range(box):
+                resid = seg[j] - (slope * j + intercept)
+                f_sum += resid * resid
+            count += box
+        if count > 0:
+            fluctuations.append(math.sqrt(f_sum / count))
+            box_sizes.append(box)
+        box += 1
+    if len(box_sizes) < 3:
+        return None
+    # Log-log linear regression
+    log_n = [math.log(b) for b in box_sizes]
+    log_f = [math.log(f) if f > 0 else -10 for f in fluctuations]
+    n_pts = len(log_n)
+    mean_x = sum(log_n) / n_pts
+    mean_y = sum(log_f) / n_pts
+    num = sum((log_n[i] - mean_x) * (log_f[i] - mean_y) for i in range(n_pts))
+    den = sum((log_n[i] - mean_x) ** 2 for i in range(n_pts))
+    if den < 1e-10:
+        return None
+    return num / den
+
+
+def compute_sample_entropy(rr_intervals: list[int], m=2, r_factor=0.2) -> float | None:
+    """Sample Entropy — regularity measure. Higher = more complex = healthier."""
+    n = len(rr_intervals)
+    if n < 50:
+        return None
+    sd = math.sqrt(sum((x - sum(rr_intervals)/n)**2 for x in rr_intervals) / n)
+    r = r_factor * sd
+    if r < 0.1:
+        return None
+
+    def count_matches(length):
+        count = 0
+        for i in range(n - length):
+            for j in range(i + 1, n - length):
+                match = True
+                for k in range(length):
+                    if abs(rr_intervals[i + k] - rr_intervals[j + k]) > r:
+                        match = False
+                        break
+                if match:
+                    count += 1
+        return count
+
+    a = count_matches(m + 1)
+    b = count_matches(m)
+    if b == 0:
+        return None
+    return -math.log(a / b) if a > 0 else None
+
+
+def compute_poincare_metrics(rr_intervals: list[int]) -> tuple[float, float, float] | None:
+    """Returns (SD1, SD2, SD1/SD2) from RR intervals."""
+    if len(rr_intervals) < 10:
+        return None
+    diffs = [rr_intervals[i+1] - rr_intervals[i] for i in range(len(rr_intervals)-1)]
+    sums = [rr_intervals[i+1] + rr_intervals[i] for i in range(len(rr_intervals)-1)]
+    sd1 = math.sqrt(sum(d**2 for d in diffs) / len(diffs)) / math.sqrt(2)
+    mean_s = sum(sums) / len(sums)
+    sd2 = math.sqrt(sum((s - mean_s)**2 for s in sums) / len(sums)) / math.sqrt(2)
+    ratio = sd1 / sd2 if sd2 > 0 else 0
+    return sd1, sd2, ratio
+
+
+def compute_pnn50(rr_intervals: list[int]) -> float:
+    if len(rr_intervals) < 2:
+        return 0
+    count = sum(1 for i in range(len(rr_intervals)-1) if abs(rr_intervals[i+1] - rr_intervals[i]) > 50)
+    return count / (len(rr_intervals) - 1) * 100
+
+
+class AdvancedAnalyzer:
+    """Runs advanced analysis periodically (every 30s) on accumulated RR data."""
+    def __init__(self):
+        self.last_compute = 0
+        self.interval = 30  # seconds
+        self.dfa_alpha1: float | None = None
+        self.sample_ent: float | None = None
+        self.sd1: float | None = None
+        self.sd2: float | None = None
+        self.pnn50: float = 0
+        self.ln_rmssd: float = 0
+
+    def update(self, rr_buffer: deque, rmssd: float, now: float) -> bool:
+        if now - self.last_compute < self.interval:
+            return False
+        self.last_compute = now
+        rr = list(rr_buffer)
+        if len(rr) < 30:
+            return False
+
+        self.ln_rmssd = math.log(max(1, rmssd))
+        self.dfa_alpha1 = compute_dfa_alpha1(rr)
+        self.pnn50 = compute_pnn50(rr)
+
+        poincare = compute_poincare_metrics(rr)
+        if poincare:
+            self.sd1, self.sd2, _ = poincare
+
+        # SampEn is expensive — only compute with enough data and not too often
+        if len(rr) >= 60:
+            self.sample_ent = compute_sample_entropy(rr[-120:])  # cap at last 120 beats
+
+        return True
+
+    def log_line(self) -> str:
+        alpha = f"α1={self.dfa_alpha1:.2f}" if self.dfa_alpha1 else "α1=—"
+        ent = f"SampEn={self.sample_ent:.2f}" if self.sample_ent else "SampEn=—"
+        return f"ln={self.ln_rmssd:.2f} {alpha} {ent} pNN50={self.pnn50:.0f}%"
 
 
 # === MOVEMENT / STILLNESS ===
@@ -969,6 +1148,7 @@ async def run(args):
     hrv = HRVEngine()
     movement = MovementTracker()
     alerts = AlertEngine()
+    advanced = AdvancedAnalyzer()
     light = LightState(mode=args.mode)
 
     # Hardware
@@ -1060,6 +1240,15 @@ async def run(args):
                                      hrv.hr_from_rr, hrv.baseline_rmssd, hrv.relative_hrv, hrv.trend)
                                 )
 
+                            # Advanced analysis every 30s
+                            if advanced.update(hrv.rr_buffer, hrv.current_rmssd, now):
+                                db.execute(
+                                    "INSERT INTO hrv_advanced (session_id, ts, ln_rmssd, dfa_alpha1, sample_entropy, sd1, sd2, pnn50) VALUES (?,?,?,?,?,?,?,?)",
+                                    (session_id, now, advanced.ln_rmssd, advanced.dfa_alpha1,
+                                     advanced.sample_ent, advanced.sd1, advanced.sd2, advanced.pnn50)
+                                )
+                                db.commit()
+
                             # Update Hue lights (slow, 0.5s)
                             if now - last_light_update >= 0.5:
                                 last_light_update = now
@@ -1079,13 +1268,13 @@ async def run(args):
                                 r, g, b = light.rgb
                                 trend_arrow = "↗" if hrv.trend > 0.3 else "↘" if hrv.trend < -0.3 else "→"
                                 stress_ind = "●" if hrv.stress_active else "○"
+                                adv_str = advanced.log_line() if advanced.dfa_alpha1 else ""
                                 print(
                                     f"\r  {stress_ind} HR {hrv.hr_from_rr:3.0f}  "
                                     f"RMSSD {hrv.current_rmssd:5.1f} {trend_arrow}  "
                                     f"drop {hrv.drop_intensity*100:2.0f}%  "
-                                    f"still {movement.stillness:.2f}  "
-                                    f"[{light.mode}]  "
-                                    f"#{r:02x}{g:02x}{b:02x}",
+                                    f"{adv_str}  "
+                                    f"[{light.mode}]",
                                     end="", flush=True
                                 )
 

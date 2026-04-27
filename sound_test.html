@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Sound Test</title>
+<style>
+body { background: #0a0a0f; color: #aaa; font: 14px/2 monospace; padding: 40px; }
+button { font: 14px monospace; padding: 10px 20px; margin: 6px; cursor: pointer; background: #1a1a2a; color: #fff; border: 1px solid #333; border-radius: 4px; }
+button:hover { background: #2a2a4a; }
+button:active { background: #4a4a6a; }
+.status { color: #555; font-size: 11px; margin-top: 20px; }
+</style></head><body>
+<h2>Sound Test — click each to hear</h2>
+<p style="color:#666">Click any button first to unlock AudioContext</p>
+
+<button onclick="playHeartbeat()">1. Heartbeat (thump)</button>
+<button onclick="playBreathTone()">2. Breath tone (rising sine)</button>
+<button onclick="playStressRumble()">3. Stress rumble (low freq)</button>
+<button onclick="playRecoveryChime()">4. Recovery chime (ascending)</button>
+<button onclick="playMarkerClick()">5. Marker click</button>
+<button onclick="playStillnessBell()">6. Stillness bell</button>
+
+<br><br>
+<button onclick="playAll()">Play all in sequence</button>
+
+<div class="status" id="log"></div>
+
+<script>
+let ctx;
+function getCtx() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    log('AudioContext created, state: ' + ctx.state);
+  }
+  if (ctx.state === 'suspended') ctx.resume();
+  return ctx;
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent = msg + '\n' + el.textContent;
+}
+
+// 1. Heartbeat — filtered noise burst
+function playHeartbeat() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+
+  // White noise buffer
+  const bufLen = ac.sampleRate * 0.08;
+  const buf = ac.createBuffer(1, bufLen, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.2));
+  }
+
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+
+  // Low-pass filter for thump
+  const filter = ac.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 80;
+  filter.Q.value = 5;
+
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.8, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start(t);
+  src.stop(t + 0.2);
+  log('Heartbeat played');
+}
+
+// 2. Breath tone — sine sweep
+function playBreathTone() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.linearRampToValueAtTime(440, t + 1);
+  osc.frequency.linearRampToValueAtTime(220, t + 2);
+
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.2, t + 0.1);
+  gain.gain.setValueAtTime(0.2, t + 1.9);
+  gain.gain.linearRampToValueAtTime(0, t + 2);
+
+  osc.connect(gain);
+  gain.connect(ac.destination);
+  osc.start(t);
+  osc.stop(t + 2.1);
+  log('Breath tone played (2s sweep)');
+}
+
+// 3. Stress rumble — low sine + noise
+function playStressRumble() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = 55;
+
+  const osc2 = ac.createOscillator();
+  osc2.type = 'sine';
+  osc2.frequency.value = 65;
+
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.3, t + 0.5);
+  gain.gain.setValueAtTime(0.3, t + 1.5);
+  gain.gain.linearRampToValueAtTime(0, t + 2);
+
+  osc.connect(gain);
+  osc2.connect(gain);
+  gain.connect(ac.destination);
+  osc.start(t);
+  osc2.start(t);
+  osc.stop(t + 2.1);
+  osc2.stop(t + 2.1);
+  log('Stress rumble played (2s)');
+}
+
+// 4. Recovery chime — two ascending tones
+function playRecoveryChime() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+
+  [523, 659, 784].forEach((freq, i) => {
+    const osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.3, t + i * 0.2);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.2 + 0.6);
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.start(t + i * 0.2);
+    osc.stop(t + i * 0.2 + 0.7);
+  });
+  log('Recovery chime played');
+}
+
+// 5. Marker click
+function playMarkerClick() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+
+  const bufLen = ac.sampleRate * 0.02;
+  const buf = ac.createBuffer(1, bufLen, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.1));
+  }
+
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const gain = ac.createGain();
+  gain.gain.value = 0.5;
+  src.connect(gain);
+  gain.connect(ac.destination);
+  src.start(t);
+  log('Marker click played');
+}
+
+// 6. Stillness bell
+function playStillnessBell() {
+  const ac = getCtx();
+  const t = ac.currentTime;
+
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = 880;
+
+  const osc2 = ac.createOscillator();
+  osc2.type = 'sine';
+  osc2.frequency.value = 1320;
+
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.25, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
+
+  osc.connect(gain);
+  osc2.connect(gain);
+  gain.connect(ac.destination);
+  osc.start(t);
+  osc2.start(t);
+  osc.stop(t + 1.6);
+  osc2.stop(t + 1.6);
+  log('Stillness bell played');
+}
+
+function playAll() {
+  playHeartbeat();
+  setTimeout(playBreathTone, 500);
+  setTimeout(playStressRumble, 3000);
+  setTimeout(playRecoveryChime, 5500);
+  setTimeout(playMarkerClick, 7000);
+  setTimeout(playStillnessBell, 7500);
+}
+</script>
+</body></html>
