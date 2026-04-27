@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Multiplayer Heartbeat</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; overflow:hidden; background:#050505; }
+canvas { display:block; width:100%; height:100%; }
+
+#overlay {
+  position:fixed; inset:0; z-index:100;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(5,5,5,0.95);
+  transition: opacity 0.6s ease-out;
+}
+#overlay.hidden { opacity:0; pointer-events:none; }
+
+#connect-box {
+  text-align:center; font-family:'SF Mono',Menlo,Consolas,monospace;
+  color:rgba(255,255,255,0.7);
+}
+#connect-box h1 { font-size:18px; font-weight:400; margin-bottom:20px; letter-spacing:2px; }
+#connect-box input {
+  background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
+  color:#fff; font:14px 'SF Mono',Menlo,monospace; padding:10px 16px;
+  border-radius:4px; width:320px; max-width:80vw; outline:none;
+  transition: border-color 0.2s;
+}
+#connect-box input:focus { border-color:rgba(255,255,255,0.4); }
+#connect-box button {
+  display:block; margin:16px auto 0; padding:10px 32px;
+  background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2);
+  color:#fff; font:13px 'SF Mono',Menlo,monospace; border-radius:4px;
+  cursor:pointer; transition: background 0.2s;
+}
+#connect-box button:hover { background:rgba(255,255,255,0.2); }
+#connect-box .hint { font-size:10px; color:rgba(255,255,255,0.25); margin-top:16px; }
+
+#sync-bar {
+  position:fixed; top:16px; left:50%; transform:translateX(-50%);
+  width:200px; height:6px; border-radius:3px;
+  background:rgba(255,255,255,0.05); overflow:hidden;
+  z-index:10; transition: box-shadow 0.5s;
+}
+#sync-fill {
+  height:100%; width:0%; border-radius:3px;
+  background:linear-gradient(90deg, rgba(255,255,255,0.15), rgba(255,255,255,0.5));
+  transition: width 0.3s ease-out;
+}
+#sync-label {
+  position:fixed; top:26px; left:50%; transform:translateX(-50%);
+  font:10px 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.2);
+  z-index:10; pointer-events:none;
+}
+
+#status {
+  position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
+  font:10px 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.15);
+  pointer-events:none; z-index:10;
+}
+#controls {
+  position:fixed; bottom:12px; right:16px;
+  font:10px 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.12);
+  pointer-events:none; z-index:10;
+}
+
+#volume-wrap {
+  position:fixed; bottom:10px; left:16px; z-index:10;
+  display:flex; align-items:center; gap:6px;
+}
+#volume-wrap label { font:10px 'SF Mono',Menlo,monospace; color:rgba(255,255,255,0.2); }
+#volume-slider {
+  -webkit-appearance:none; appearance:none; width:80px; height:3px;
+  background:rgba(255,255,255,0.1); border-radius:2px; outline:none;
+}
+#volume-slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:10px; height:10px; border-radius:50%;
+  background:rgba(255,255,255,0.3); cursor:pointer;
+}
+</style></head><body>
+
+<div id="overlay">
+  <div id="connect-box">
+    <h1>MULTIPLAYER HEARTBEAT</h1>
+    <input id="url-input" type="text" value="ws://localhost:9000" spellcheck="false">
+    <button id="connect-btn">Connect</button>
+    <div class="hint">R to reconnect &middot; F fullscreen &middot; M mute</div>
+  </div>
+</div>
+
+<canvas id="c"></canvas>
+<div id="sync-bar"><div id="sync-fill"></div></div>
+<div id="sync-label">sync --</div>
+<div id="status"></div>
+<div id="controls">R=reconnect F=fullscreen M=mute</div>
+<div id="volume-wrap">
+  <label>VOL</label>
+  <input id="volume-slider" type="range" min="0" max="100" value="50">
+</div>
+
+<script>
+(function(){
+  // --- Canvas setup ---
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const dpr = Math.min(devicePixelRatio, 2);
+  let W, H;
+
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // --- DOM refs ---
+  const overlay = document.getElementById('overlay');
+  const urlInput = document.getElementById('url-input');
+  const connectBtn = document.getElementById('connect-btn');
+  const syncFill = document.getElementById('sync-fill');
+  const syncLabel = document.getElementById('sync-label');
+  const syncBar = document.getElementById('sync-bar');
+  const statusEl = document.getElementById('status');
+  const volumeSlider = document.getElementById('volume-slider');
+
+  // --- State ---
+  let participants = {};  // id -> { name, bpm, rr, rmssd, color, lastBeat, spawnX, fadeIn, fadeOut, noteIndex }
+  let syncValue = 0;
+  let particleCount = 0;
+  const MAX_PARTICLES = 600;
+  const particles = [];
+
+  // Pentatonic scale frequencies (C major pentatonic across 2 octaves)
+  const PENTATONIC = [
+    261.63, 293.66, 329.63, 392.00, 440.00,   // C4 D4 E4 G4 A4
+    523.25, 587.33, 659.25, 783.99, 880.00,    // C5 D5 E5 G5 A5
+  ];
+
+  // --- Audio ---
+  let audioCtx = null;
+  let masterGain = null;
+  let muted = false;
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = volumeSlider.value / 100 * 0.4;
+    masterGain.connect(audioCtx.destination);
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  volumeSlider.addEventListener('input', () => {
+    if (masterGain) masterGain.gain.value = muted ? 0 : volumeSlider.value / 100 * 0.4;
+  });
+
+  function playNote(noteIndex, sync) {
+    if (!audioCtx || muted) return;
+    const t = audioCtx.currentTime;
+    const freq = PENTATONIC[noteIndex % PENTATONIC.length];
+
+    // Main oscillator
+    const osc = audioCtx.createOscillator();
+    osc.type = sync > 0.5 ? 'sine' : 'triangle';
+    osc.frequency.value = freq;
+
+    // Slight detune when sync is low (cacophonous)
+    osc.detune.value = (1 - sync) * (Math.random() - 0.5) * 40;
+
+    const gain = audioCtx.createGain();
+    const vol = 0.15 + sync * 0.1;
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8 + sync * 0.8);
+
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 2);
+
+    // Add a fifth above when sync is high (consonant)
+    if (sync > 0.6) {
+      const osc2 = audioCtx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.value = freq * 1.5;
+      const g2 = audioCtx.createGain();
+      g2.gain.setValueAtTime(sync * 0.06, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+      osc2.connect(g2); g2.connect(masterGain);
+      osc2.start(t); osc2.stop(t + 1);
+    }
+  }
+
+  // --- Particle system ---
+  function spawnBurst(pid, now) {
+    const p = participants[pid];
+    if (!p) return;
+
+    const cx = p.spawnX;
+    const cy = H * 0.45;
+    const count = 15 + Math.floor((p.bpm || 70) / 8);
+
+    // Parse color to RGB
+    const rgb = hexToRGB(p.color);
+
+    for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 30 + Math.random() * 180;
+      const life = 3 + Math.random() * 4;
+      const size = 1.5 + Math.random() * 5;
+      particles.push({
+        x: cx + (Math.random() - 0.5) * 16,
+        y: cy + (Math.random() - 0.5) * 16,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 25,
+        size,
+        maxSize: size,
+        life,
+        maxLife: life,
+        born: now,
+        r: rgb.r, g: rgb.g, b: rgb.b,
+        drag: 0.97 + Math.random() * 0.025,
+        gravity: 15 + Math.random() * 25,
+        wobble: (Math.random() - 0.5) * 2,
+        pid: pid,
+        // When sync is high, bias particles toward center
+        attractCenter: syncValue > 0.7 ? (syncValue - 0.7) * 3.3 : 0,
+      });
+    }
+  }
+
+  function hexToRGB(hex) {
+    const m = hex.match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
+    if (!m) return { r: 255, g: 68, b: 85 };
+    return { r: parseInt(m[1],16), g: parseInt(m[2],16), b: parseInt(m[3],16) };
+  }
+
+  function updateParticles(dt, now) {
+    const centerX = W / 2, centerY = H * 0.45;
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const age = now - p.born;
+      if (age > p.maxLife) {
+        particles.splice(i, 1);
+        continue;
+      }
+
+      // Physics
+      p.vy += p.gravity * dt;
+      p.vx += p.wobble * dt * 30;
+      p.vx *= p.drag;
+      p.vy *= p.drag;
+
+      // Center attraction when sync is high
+      if (p.attractCenter > 0) {
+        const dx = centerX - p.x;
+        const dy = centerY - p.y;
+        p.vx += dx * p.attractCenter * dt * 0.5;
+        p.vy += dy * p.attractCenter * dt * 0.3;
+      }
+
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+
+      // Floor bounce
+      if (p.y > H - 10) {
+        p.y = H - 10;
+        p.vy *= -0.3;
+        p.vx *= 0.8;
+      }
+      // Walls
+      if (p.x < 0) { p.x = 0; p.vx *= -0.5; }
+      if (p.x > W) { p.x = W; p.vx *= -0.5; }
+
+      p.life = p.maxLife - age;
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const lifeFrac = p.life / p.maxLife;
+      const easedLife = 1 - Math.pow(1 - lifeFrac, 3); // cubic ease-out
+      const alpha = easedLife * 0.55;
+      const size = p.maxSize * (0.3 + easedLife * 0.7);
+
+      // Aging: shift toward warmer/lighter as particle ages
+      const ageFrac = 1 - lifeFrac;
+      const r = Math.min(255, p.r + ageFrac * 40);
+      const g = Math.min(255, p.g + ageFrac * 20);
+      const b = Math.min(255, p.b + ageFrac * 10);
+
+      // Glow for larger particles
+      if (size > 3 && alpha > 0.08) {
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 3);
+        grad.addColorStop(0, `rgba(${r|0},${g|0},${b|0},${alpha * 0.25})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r|0},${g|0},${b|0},${alpha})`;
+      ctx.fill();
+    }
+  }
+
+  // --- Sync glow: connecting lines between close-beat participants ---
+  function drawSyncEffects(now) {
+    if (syncValue < 0.4) return;
+    const ids = Object.keys(participants);
+    if (ids.length < 2) return;
+
+    const alpha = (syncValue - 0.4) * 1.67; // 0..1 mapped from 0.4..1.0
+    const centerX = W / 2, centerY = H * 0.45;
+
+    // Draw glow at center when sync is high
+    if (syncValue > 0.6) {
+      const glowAlpha = (syncValue - 0.6) * 2.5;
+      const pulse = 0.8 + Math.sin(now * 3) * 0.2;
+      const radius = 40 + syncValue * 60 * pulse;
+      const grad = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+      grad.addColorStop(0, `rgba(255,255,255,${glowAlpha * 0.12 * pulse})`);
+      grad.addColorStop(0.5, `rgba(200,200,255,${glowAlpha * 0.04})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw connecting lines between participants
+    ctx.lineWidth = 1;
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = participants[ids[i]];
+        const b = participants[ids[j]];
+        if (!a || !b || a.fadeOut > 0 || b.fadeOut > 0) continue;
+
+        const ax = a.spawnX, ay = H * 0.45;
+        const bx = b.spawnX, by = H * 0.45;
+
+        // Beat timing closeness
+        const timeDiff = Math.abs((a.lastBeat || 0) - (b.lastBeat || 0));
+        const closeness = Math.max(0, 1 - timeDiff * 2); // within 0.5s
+        const lineAlpha = alpha * closeness * 0.15;
+
+        if (lineAlpha > 0.01) {
+          const grad = ctx.createLinearGradient(ax, ay, bx, by);
+          grad.addColorStop(0, a.color.replace(')', `,${lineAlpha})`).replace('rgb(', 'rgba(').replace('#', ''));
+          // Use rgba from hex
+          const aRGB = hexToRGB(a.color);
+          const bRGB = hexToRGB(b.color);
+          ctx.strokeStyle = `rgba(${(aRGB.r+bRGB.r)/2|0},${(aRGB.g+bRGB.g)/2|0},${(aRGB.b+bRGB.b)/2|0},${lineAlpha})`;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          // Curve through center
+          ctx.quadraticCurveTo(centerX, centerY - 30 * syncValue, bx, by);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // --- Labels ---
+  function drawLabels() {
+    ctx.font = '12px "SF Mono",Menlo,Consolas,monospace';
+    ctx.textAlign = 'center';
+
+    for (const id of Object.keys(participants)) {
+      const p = participants[id];
+      const fadeAlpha = p.fadeOut > 0 ? Math.max(0, 1 - p.fadeOut) : Math.min(1, p.fadeIn || 0);
+      if (fadeAlpha < 0.01) continue;
+
+      const x = p.spawnX;
+      const y = H * 0.45 + 70;
+      const alpha = fadeAlpha * 0.4;
+
+      // Name
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.fillText(p.name, x, y);
+
+      // BPM
+      if (p.bpm > 0) {
+        ctx.font = '10px "SF Mono",Menlo,monospace';
+        ctx.fillStyle = p.color.length === 7
+          ? p.color + Math.round(alpha * 180).toString(16).padStart(2, '0')
+          : `rgba(255,255,255,${alpha * 0.6})`;
+        ctx.fillText(p.bpm + ' bpm', x, y + 16);
+        ctx.font = '12px "SF Mono",Menlo,Consolas,monospace';
+      }
+    }
+  }
+
+  // --- Sync meter ---
+  function updateSyncMeter() {
+    const pct = Math.round(syncValue * 100);
+    syncFill.style.width = pct + '%';
+    syncLabel.textContent = 'sync ' + pct + '%';
+
+    if (syncValue > 0.7) {
+      const glow = (syncValue - 0.7) * 3.3;
+      syncBar.style.boxShadow = `0 0 ${8 + glow * 12}px rgba(255,255,255,${glow * 0.3})`;
+      syncFill.style.background = `linear-gradient(90deg, rgba(255,255,255,${0.2+glow*0.3}), rgba(255,255,255,${0.5+glow*0.5}))`;
+    } else {
+      syncBar.style.boxShadow = 'none';
+      syncFill.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.15), rgba(255,255,255,0.5))';
+    }
+  }
+
+  // --- Assign spawn positions ---
+  function recalcSpawnPositions() {
+    const ids = Object.keys(participants).sort();
+    const n = ids.length;
+    if (n === 0) return;
+    const margin = Math.min(120, W * 0.15);
+    const span = W - margin * 2;
+    ids.forEach((id, i) => {
+      const target = n === 1 ? W / 2 : margin + (i / (n - 1)) * span;
+      // Smooth transition
+      const p = participants[id];
+      if (p.spawnX === undefined) p.spawnX = target;
+      else p.spawnX += (target - p.spawnX) * 0.1;
+      p.noteIndex = i;
+    });
+  }
+
+  // --- WebSocket ---
+  let ws = null;
+  let reconnectTimer = null;
+  let wsUrl = 'ws://localhost:9000';
+  let lastBeatTimes = {}; // pid -> timestamp of last beat we processed
+
+  function doConnect() {
+    if (ws) { try { ws.close(); } catch(e){} }
+    clearTimeout(reconnectTimer);
+    wsUrl = urlInput.value.trim() || 'ws://localhost:9000';
+
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch(e) {
+      statusEl.textContent = 'invalid URL';
+      return;
+    }
+
+    statusEl.textContent = 'connecting...';
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'view' }));
+      overlay.classList.add('hidden');
+      statusEl.textContent = 'connected';
+      setTimeout(() => { if (statusEl.textContent === 'connected') statusEl.textContent = ''; }, 2000);
+      initAudio();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'state') {
+          handleState(msg);
+        }
+      } catch(err) {}
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = 'disconnected — reconnecting...';
+      reconnectTimer = setTimeout(doConnect, 3000);
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch(e) {}
+    };
+  }
+
+  function handleState(msg) {
+    const now = performance.now() / 1000;
+    const incoming = msg.participants || {};
+    syncValue = msg.sync || 0;
+
+    // Detect new participants and beats
+    for (const id of Object.keys(incoming)) {
+      const data = incoming[id];
+
+      if (!participants[id]) {
+        // New participant: fade in
+        participants[id] = {
+          name: data.name || id,
+          bpm: data.bpm || 0,
+          rr: data.rr || [],
+          rmssd: data.rmssd || 0,
+          color: data.color || '#ffffff',
+          lastBeat: data.lastBeat || 0,
+          spawnX: W / 2,
+          fadeIn: 0,
+          fadeOut: 0,
+          noteIndex: 0,
+        };
+        lastBeatTimes[id] = data.lastBeat || 0;
+      } else {
+        // Update existing
+        const p = participants[id];
+        p.name = data.name || p.name;
+        p.bpm = data.bpm || p.bpm;
+        p.rr = data.rr || p.rr;
+        p.rmssd = data.rmssd || p.rmssd;
+        p.color = data.color || p.color;
+        p.fadeOut = 0; // still active
+
+        // Detect new beat
+        if (data.lastBeat && data.lastBeat !== lastBeatTimes[id]) {
+          lastBeatTimes[id] = data.lastBeat;
+          p.lastBeat = now;
+          spawnBurst(id, now);
+          playNote(p.noteIndex, syncValue);
+        }
+      }
+    }
+
+    // Mark departed participants for fade-out
+    for (const id of Object.keys(participants)) {
+      if (!incoming[id]) {
+        participants[id].fadeOut += 0.02;
+        if (participants[id].fadeOut > 1.5) {
+          delete participants[id];
+          delete lastBeatTimes[id];
+        }
+      }
+    }
+
+    recalcSpawnPositions();
+    updateSyncMeter();
+  }
+
+  // --- Connection UI ---
+  connectBtn.addEventListener('click', doConnect);
+  urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
+
+  // --- Keyboard ---
+  document.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'r') {
+      overlay.classList.remove('hidden');
+      urlInput.focus();
+      urlInput.select();
+    } else if (k === 'f') {
+      if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+      else document.documentElement.requestFullscreen().catch(()=>{});
+    } else if (k === 'm') {
+      muted = !muted;
+      if (masterGain) masterGain.gain.value = muted ? 0 : volumeSlider.value / 100 * 0.4;
+    }
+  });
+
+  // Ensure audio context on first interaction
+  document.addEventListener('click', () => {
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  });
+
+  // --- Render loop ---
+  let lastTime = 0;
+  function render(time) {
+    const now = time / 1000;
+    const dt = Math.min(0.05, now - (lastTime || now));
+    lastTime = now;
+
+    // Clear
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, W, H);
+
+    // Fade-in participants
+    for (const id of Object.keys(participants)) {
+      const p = participants[id];
+      if (p.fadeIn < 1) p.fadeIn = Math.min(1, (p.fadeIn || 0) + dt * 0.8);
+    }
+
+    // Smooth spawn positions
+    recalcSpawnPositions();
+
+    // Beat flash per participant
+    for (const id of Object.keys(participants)) {
+      const p = participants[id];
+      if (!p.lastBeat || p.fadeOut > 0) continue;
+      const elapsed = now - p.lastBeat;
+      if (elapsed < 0.3) {
+        const beat = Math.cos(elapsed / 0.3 * Math.PI / 2);
+        const rgb = hexToRGB(p.color);
+        const alpha = beat * 0.04 * Math.min(1, p.fadeIn || 0);
+        const grad = ctx.createRadialGradient(p.spawnX, H * 0.45, 0, p.spawnX, H * 0.45, 120);
+        grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(p.spawnX, H * 0.45, 120, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Sync effects
+    drawSyncEffects(now);
+
+    // Particles
+    updateParticles(dt, now);
+    drawParticles();
+
+    // Labels
+    drawLabels();
+
+    // Status
+    const count = Object.keys(participants).length;
+    if (count > 0) {
+      statusEl.textContent = count + ' heart' + (count !== 1 ? 's' : '') + ' · ' + particles.length + ' particles';
+    }
+
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+
+})();
+</script>
+</body></html>
