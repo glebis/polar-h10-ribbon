@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>HRV Wearable Concept</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; color: #aaa; font: 14px/1.7 'SF Mono', Menlo, monospace; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; min-height: 100vh; }
+h1 { font-size: 18px; color: #fff; margin-bottom: 6px; }
+.sub { font-size: 11px; color: #555; margin-bottom: 40px; }
+.concepts { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; }
+.concept { text-align: center; }
+.concept h2 { font-size: 12px; color: #666; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 16px; }
+
+canvas { border-radius: 8px; }
+
+.specs { margin-top: 40px; max-width: 700px; width: 100%; }
+.specs h2 { font-size: 12px; color: #666; letter-spacing: 1.5px; text-transform: uppercase; margin: 30px 0 12px; }
+.specs table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.specs th { text-align: left; padding: 6px 10px; color: #555; border-bottom: 1px solid #1a1a1a; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.specs td { padding: 6px 10px; border-bottom: 1px solid #111; }
+.specs .cost { color: #4ecdc4; }
+
+.slider-row { margin: 20px 0; display: flex; align-items: center; gap: 12px; font-size: 11px; color: #666; }
+.slider-row input { width: 300px; accent-color: #4ecdc4; }
+.slider-row .val { color: #fff; width: 80px; }
+</style></head><body>
+
+<h1>HRV Wearable Concept</h1>
+<div class="sub">Interactive preview — drag the slider to see states</div>
+
+<div class="slider-row">
+  <span>RMSSD:</span>
+  <input type="range" id="rmssd-slider" min="5" max="80" value="25">
+  <span class="val" id="rmssd-val">25ms — low</span>
+</div>
+
+<div class="concepts">
+  <div class="concept">
+    <h2>Bracelet — top view</h2>
+    <canvas id="bracelet" width="300" height="300"></canvas>
+  </div>
+  <div class="concept">
+    <h2>Bracelet — side view</h2>
+    <canvas id="side" width="300" height="160"></canvas>
+  </div>
+  <div class="concept">
+    <h2>Haptic pattern</h2>
+    <canvas id="haptic" width="300" height="160"></canvas>
+  </div>
+</div>
+
+<div class="specs">
+<h2>Bill of Materials (RPi Zero W version)</h2>
+<table>
+<tr><th>Part</th><th>Purpose</th><th>Cost</th></tr>
+<tr><td>Raspberry Pi Zero W</td><td>BLE + compute</td><td class="cost">already owned</td></tr>
+<tr><td>NeoPixel Ring 12 LED (WS2812B)</td><td>HRV color display</td><td class="cost">~6 EUR</td></tr>
+<tr><td>Coin vibration motor (10mm)</td><td>Haptic alerts</td><td class="cost">~2 EUR</td></tr>
+<tr><td>MOSFET (2N7000) + resistor</td><td>Motor driver</td><td class="cost">~0.50 EUR</td></tr>
+<tr><td>LiPo 500mAh + charger board</td><td>Power (~4h runtime)</td><td class="cost">~8 EUR</td></tr>
+<tr><td>Wide silicone watchband (22mm)</td><td>Housing</td><td class="cost">~5 EUR</td></tr>
+<tr><td><strong>Total</strong></td><td></td><td class="cost"><strong>~22 EUR</strong></td></tr>
+</table>
+
+<h2>ESP32 version (smaller, lighter)</h2>
+<table>
+<tr><th>Part</th><th>Purpose</th><th>Cost</th></tr>
+<tr><td>ESP32-C3 SuperMini</td><td>BLE + compute (tiny!)</td><td class="cost">~4 EUR</td></tr>
+<tr><td>NeoPixel Ring 8 LED</td><td>HRV color display</td><td class="cost">~4 EUR</td></tr>
+<tr><td>Vibration motor LRA</td><td>Haptic alerts</td><td class="cost">~2 EUR</td></tr>
+<tr><td>LiPo 300mAh</td><td>Power (~8h with deep sleep)</td><td class="cost">~4 EUR</td></tr>
+<tr><td><strong>Total</strong></td><td></td><td class="cost"><strong>~14 EUR</strong></td></tr>
+</table>
+
+<h2>Software Stack</h2>
+<table>
+<tr><th>Layer</th><th>Implementation</th></tr>
+<tr><td>BLE connection</td><td>bleak (RPi) / NimBLE (ESP32)</td></tr>
+<tr><td>HRV computation</td><td>Same RMSSD + DFA from hrv_daemon.py</td></tr>
+<tr><td>LED control</td><td>rpi_ws281x (RPi) / FastLED (ESP32)</td></tr>
+<tr><td>Haptic</td><td>GPIO PWM for vibration patterns</td></tr>
+<tr><td>Power management</td><td>Compute on beat, sleep between (ESP32 deep sleep)</td></tr>
+</table>
+</div>
+
+<script>
+const slider = document.getElementById('rmssd-slider');
+const valEl = document.getElementById('rmssd-val');
+const braceletCanvas = document.getElementById('bracelet');
+const sideCanvas = document.getElementById('side');
+const hapticCanvas = document.getElementById('haptic');
+const bCtx = braceletCanvas.getContext('2d');
+const sCtx = sideCanvas.getContext('2d');
+const hCtx = hapticCanvas.getContext('2d');
+
+let rmssd = 25;
+let t = 0;
+
+slider.addEventListener('input', () => {
+  rmssd = parseInt(slider.value);
+  const label = rmssd > 50 ? 'calm' : rmssd > 30 ? 'moderate' : rmssd > 15 ? 'low' : 'very low';
+  valEl.textContent = `${rmssd}ms — ${label}`;
+});
+
+function hsvToRgb(h, s, v) {
+  let r, g, b;
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0: r=v;g=t;b=p;break; case 1: r=q;g=v;b=p;break;
+    case 2: r=p;g=v;b=t;break; case 3: r=p;g=q;b=v;break;
+    case 4: r=t;g=p;b=v;break; case 5: r=v;g=p;b=q;break;
+  }
+  return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+}
+
+function getColor(rmssd, offset) {
+  // Red (healthy) → blue (stressed)
+  const stress = Math.max(0, Math.min(1, 1 - (rmssd - 10) / 50));
+  const hue = 0.0 + stress * 0.6; // red → blue
+  const sat = 0.7 + stress * 0.3;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 3 + offset);
+  const val = 0.3 + pulse * 0.5 * (1 - stress * 0.3);
+  return hsvToRgb(hue, sat, val);
+}
+
+function drawBracelet() {
+  bCtx.fillStyle = '#0a0a0f';
+  bCtx.fillRect(0, 0, 300, 300);
+
+  const cx = 150, cy = 150;
+  const outerR = 120, innerR = 85;
+  const numLeds = 12;
+
+  // Band
+  bCtx.beginPath();
+  bCtx.arc(cx, cy, outerR + 8, 0, Math.PI * 2);
+  bCtx.fillStyle = '#1a1a1a';
+  bCtx.fill();
+  bCtx.beginPath();
+  bCtx.arc(cx, cy, innerR - 8, 0, Math.PI * 2);
+  bCtx.fillStyle = '#0a0a0f';
+  bCtx.fill();
+
+  // Band texture
+  bCtx.strokeStyle = '#222';
+  bCtx.lineWidth = outerR - innerR;
+  bCtx.beginPath();
+  bCtx.arc(cx, cy, (outerR + innerR) / 2, 0, Math.PI * 2);
+  bCtx.stroke();
+
+  // LEDs
+  for (let i = 0; i < numLeds; i++) {
+    const angle = (i / numLeds) * Math.PI * 2 - Math.PI / 2;
+    const midR = (outerR + innerR) / 2;
+    const lx = cx + Math.cos(angle) * midR;
+    const ly = cy + Math.sin(angle) * midR;
+    const [r, g, b] = getColor(rmssd, i * 0.5);
+
+    // Glow
+    const grad = bCtx.createRadialGradient(lx, ly, 2, lx, ly, 18);
+    grad.addColorStop(0, `rgba(${r},${g},${b},0.8)`);
+    grad.addColorStop(0.5, `rgba(${r},${g},${b},0.2)`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    bCtx.fillStyle = grad;
+    bCtx.beginPath();
+    bCtx.arc(lx, ly, 18, 0, Math.PI * 2);
+    bCtx.fill();
+
+    // LED dot
+    bCtx.beginPath();
+    bCtx.arc(lx, ly, 4, 0, Math.PI * 2);
+    bCtx.fillStyle = `rgb(${r},${g},${b})`;
+    bCtx.fill();
+  }
+
+  // Center text
+  bCtx.fillStyle = 'rgba(255,255,255,0.15)';
+  bCtx.font = '9px monospace';
+  bCtx.textAlign = 'center';
+  bCtx.fillText('RPi Zero W', cx, cy - 8);
+  bCtx.fillText('+ NeoPixel 12', cx, cy + 5);
+  bCtx.fillText('+ vibration', cx, cy + 18);
+}
+
+function drawSide() {
+  sCtx.fillStyle = '#0a0a0f';
+  sCtx.fillRect(0, 0, 300, 160);
+
+  // Wrist outline
+  sCtx.strokeStyle = '#333';
+  sCtx.lineWidth = 1;
+  sCtx.beginPath();
+  sCtx.ellipse(150, 110, 80, 30, 0, Math.PI, 0);
+  sCtx.stroke();
+
+  // Band
+  const bandY = 60;
+  const bandH = 22;
+  sCtx.fillStyle = '#1a1a1a';
+  sCtx.beginPath();
+  sCtx.roundRect(40, bandY, 220, bandH, 4);
+  sCtx.fill();
+
+  // LED glow along the band
+  const numLeds = 8;
+  for (let i = 0; i < numLeds; i++) {
+    const x = 60 + i * (180 / (numLeds - 1));
+    const [r, g, b] = getColor(rmssd, i * 0.4);
+    const grad = sCtx.createRadialGradient(x, bandY + bandH/2, 1, x, bandY + bandH/2, 14);
+    grad.addColorStop(0, `rgba(${r},${g},${b},0.9)`);
+    grad.addColorStop(0.6, `rgba(${r},${g},${b},0.15)`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    sCtx.fillStyle = grad;
+    sCtx.beginPath();
+    sCtx.arc(x, bandY + bandH/2, 14, 0, Math.PI * 2);
+    sCtx.fill();
+
+    sCtx.beginPath();
+    sCtx.arc(x, bandY + bandH/2, 2.5, 0, Math.PI * 2);
+    sCtx.fillStyle = `rgb(${r},${g},${b})`;
+    sCtx.fill();
+  }
+
+  // Labels
+  sCtx.fillStyle = 'rgba(255,255,255,0.2)';
+  sCtx.font = '9px monospace';
+  sCtx.textAlign = 'center';
+  sCtx.fillText('22mm silicone band', 150, bandY - 8);
+  sCtx.fillText('wrist', 150, 145);
+
+  // Vibration motor indicator
+  const stress = Math.max(0, Math.min(1, 1 - (rmssd - 10) / 50));
+  if (stress > 0.5) {
+    const shake = Math.sin(t * 20) * 2 * stress;
+    sCtx.fillStyle = 'rgba(255,100,100,0.3)';
+    sCtx.font = '8px monospace';
+    sCtx.fillText('〰 vibrating', 150 + shake, bandY + bandH + 18);
+  }
+}
+
+function drawHaptic() {
+  hCtx.fillStyle = '#0a0a0f';
+  hCtx.fillRect(0, 0, 300, 160);
+
+  const stress = Math.max(0, Math.min(1, 1 - (rmssd - 10) / 50));
+
+  // Title
+  hCtx.fillStyle = 'rgba(255,255,255,0.3)';
+  hCtx.font = '9px monospace';
+  hCtx.textAlign = 'left';
+
+  // Patterns
+  const patterns = [
+    { label: 'Calm — no haptic', thresh: 0.2, pattern: [] },
+    { label: 'Dipping — two short buzzes', thresh: 0.5, pattern: [1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0] },
+    { label: 'Stressed — pulse with heartbeat', thresh: 0.7, pattern: [1,1,0,0,0,0,0,0,1,1,0,0,0,0,0,0] },
+    { label: 'Move reminder — long buzz', thresh: 0, pattern: [1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0] },
+  ];
+
+  const active = stress < 0.3 ? 0 : stress < 0.6 ? 1 : 2;
+
+  patterns.forEach((p, i) => {
+    const y = 20 + i * 36;
+    const isActive = i === active;
+    hCtx.fillStyle = isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.15)';
+    hCtx.fillText(p.label, 10, y);
+
+    // Draw pattern bars
+    const barY = y + 6;
+    p.pattern.forEach((v, j) => {
+      const x = 10 + j * 18;
+      if (v) {
+        const [r, g, b] = isActive ? getColor(rmssd, 0) : [80,80,80];
+        hCtx.fillStyle = `rgba(${r},${g},${b},${isActive ? 0.8 : 0.2})`;
+      } else {
+        hCtx.fillStyle = 'rgba(255,255,255,0.03)';
+      }
+      hCtx.fillRect(x, barY, 14, 10);
+    });
+  });
+}
+
+function animate() {
+  t += 0.016;
+  drawBracelet();
+  drawSide();
+  drawHaptic();
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body></html>
