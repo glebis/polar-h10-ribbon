@@ -14,13 +14,13 @@ Teaching beat every deliberate health practice I tried:
 
 ♥ Teaching (flow state): 65ms
 ♥ Exercise + breathing: 44ms  
-♥ Post-exercise rebound: 40ms
+♥ Cold exposure: 40ms
 ♥ Coherence breathing: 38ms
 ♥ Resting baseline: 29ms
 
-I have generalized anxiety disorder. I've been researching HRV biofeedback as a protocol — breathing exercises, cold showers, Zone 2 training. All evidence-based. All helpful. None came close to what happened when I was teaching.
+I've been researching HRV biofeedback as an anxiety management protocol — breathing exercises, cold showers, Zone 2 training. All evidence-based. All helpful. None came close to what happened when I was teaching.
 
-The insight: my anxiety doesn't live in my nervous system. It lives in the gaps between purpose.
+The insight: anxiety doesn't live in the nervous system. It lives in the gaps between purpose.
 
 When I'm idle, my nervous system spins into sympathetic dominance — fight-or-flight without a fight. When I'm deeply engaged in teaching, the default mode network quiets, the vagal brake engages, and my heart finds its rhythm.
 
