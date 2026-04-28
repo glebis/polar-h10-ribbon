@@ -5,6 +5,8 @@ __pycache__/
 *.db-shm
 *.db-wal
 hrv_log.jsonl
+coach_log.jsonl
+coach_sessions.jsonl
 protocol_log.json
 hrv_lights_config.json
 .enzyme/

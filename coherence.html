@@ -28,7 +28,14 @@
   <canvas id="c"></canvas>
   <div id="score"><div class="v" id="vScore">—</div><div class="lbl">coherence</div></div>
   <div id="ctrl"></div>
-  <div id="help">↑↓ exercise · space pause · F flip · R reset</div>
+  <div id="session-bar" style="position:fixed;bottom:40px;left:50%;transform:translateX(-50%);
+    font-size:12px;display:flex;gap:12px;align-items:center;opacity:0.6;user-select:none">
+    <button id="btn-session" style="font:12px monospace;background:#1a1a22;border:1px solid #333;
+      color:#ccc;padding:5px 14px;border-radius:3px;cursor:pointer">● record</button>
+    <span id="session-timer" style="font-variant-numeric:tabular-nums;color:#555">0:00</span>
+    <span id="session-score" style="color:#555">avg —</span>
+  </div>
+  <div id="help">↑↓ exercise · space pause · F flip · R reset · B audio</div>
   <div id="nav"></div>
   <div id="status">connecting…</div>
 
@@ -41,6 +48,211 @@
     let selectedExercise = 0;
     let scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
     let paused = false;
+
+    // ── Audio biofeedback ──────────────────────────────────────
+    let audioCtx = null;
+    let audioOn = false;
+    let droneOsc = null, droneGain = null, droneFilter = null;
+    let breathOsc = null, breathGain = null;
+    let prevScore = 0;
+
+    function initAudio() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    function startAudio() {
+      initAudio();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      audioOn = true;
+
+      // drone: continuous tone, pitch = coherence, filter = breath
+      droneOsc = audioCtx.createOscillator();
+      droneOsc.type = 'sine';
+      droneOsc.frequency.value = 220;
+      const droneOsc2 = audioCtx.createOscillator();
+      droneOsc2.type = 'sine';
+      droneOsc2.frequency.value = 330; // fifth
+      droneFilter = audioCtx.createBiquadFilter();
+      droneFilter.type = 'lowpass';
+      droneFilter.frequency.value = 400;
+      droneFilter.Q.value = 2;
+      droneGain = audioCtx.createGain();
+      droneGain.gain.value = 0;
+      const droneGain2 = audioCtx.createGain();
+      droneGain2.gain.value = 0;
+
+      droneOsc.connect(droneFilter);
+      droneOsc2.connect(droneFilter);
+      droneFilter.connect(droneGain);
+      droneGain.connect(audioCtx.destination);
+
+      // breath guide tone: pitch follows target breathing pattern
+      breathOsc = audioCtx.createOscillator();
+      breathOsc.type = 'triangle';
+      breathOsc.frequency.value = 300;
+      breathGain = audioCtx.createGain();
+      breathGain.gain.value = 0;
+      const breathFilter = audioCtx.createBiquadFilter();
+      breathFilter.type = 'lowpass';
+      breathFilter.frequency.value = 1200;
+      breathOsc.connect(breathFilter);
+      breathFilter.connect(breathGain);
+      breathGain.connect(audioCtx.destination);
+
+      droneOsc.start(); droneOsc2.start(); breathOsc.start();
+
+      // store refs for cleanup
+      droneOsc._pair = droneOsc2;
+      droneOsc._gain2 = droneGain2;
+    }
+
+    function stopAudio() {
+      audioOn = false;
+      if (droneOsc) { droneOsc.stop(); droneOsc._pair.stop(); droneOsc = null; }
+      if (breathOsc) { breathOsc.stop(); breathOsc = null; }
+    }
+
+    function updateAudio(score, breath01, target, phase, dt) {
+      if (!audioOn || !audioCtx) return;
+      const t = audioCtx.currentTime;
+
+      // drone volume: fades in with coherence score
+      const targetVol = Math.min(0.06, score / 10 * 0.06);
+      droneGain.gain.setTargetAtTime(targetVol, t, 0.3);
+
+      // drone pitch: rises with coherence (220 → 440 over 0-10 score)
+      // uses just intonation intervals for consonance
+      const intervals = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2]; // major scale ratios
+      const idx = Math.min(7, Math.floor(score / 10 * 7.99));
+      const droneFreq = 110 * intervals[idx];
+      droneOsc.frequency.setTargetAtTime(droneFreq, t, 0.5);
+      droneOsc._pair.frequency.setTargetAtTime(droneFreq * 1.5, t, 0.5); // fifth above
+
+      // filter opens with coherence
+      droneFilter.frequency.setTargetAtTime(300 + score / 10 * 2000, t, 0.3);
+
+      // consonance reward: when score jumps up, play a bright chime
+      if (score > prevScore + 1.5 && score > 4) {
+        const chime = audioCtx.createOscillator();
+        chime.type = 'sine';
+        chime.frequency.value = droneFreq * 2;
+        const cg = audioCtx.createGain();
+        cg.gain.setValueAtTime(0.03, t);
+        cg.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+        chime.connect(cg); cg.connect(audioCtx.destination);
+        chime.start(t); chime.stop(t + 1);
+      }
+      prevScore = score;
+
+      // breath guide: pitch follows target amplitude
+      const breathFreq = 200 + target * 400; // 200-600 Hz
+      breathOsc.frequency.setTargetAtTime(breathFreq, t, 0.1);
+      // volume: soft guide, louder on inhale
+      const breathVol = phase === 'hold' ? 0.005 : 0.015 + target * 0.01;
+      breathGain.gain.setTargetAtTime(breathVol, t, 0.1);
+    }
+
+    // ── Session recording ──────────────────────────────────────
+    let recording = false;
+    let sessionStart = 0;
+    let sessionData = [];
+    const btnSession = document.getElementById('btn-session');
+    const timerEl = document.getElementById('session-timer');
+    const scoreAvgEl = document.getElementById('session-score');
+
+    btnSession.onclick = () => {
+      initAudio();
+      if (!recording) {
+        recording = true;
+        sessionStart = performance.now() / 1000;
+        sessionData = [];
+        btnSession.textContent = '■ stop';
+        btnSession.style.color = '#e55';
+      } else {
+        recording = false;
+        btnSession.textContent = '● record';
+        btnSession.style.color = '#ccc';
+        finishSession();
+      }
+    };
+
+    function recordTick(score, hr, breath, coherenceVal) {
+      if (!recording) return;
+      const elapsed = performance.now() / 1000 - sessionStart;
+      sessionData.push({ t: elapsed, score, hr, breath, coherence: coherenceVal });
+
+      // update timer
+      const min = Math.floor(elapsed / 60);
+      const sec = Math.floor(elapsed % 60);
+      timerEl.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+
+      // running average
+      if (sessionData.length > 0) {
+        const avg = sessionData.reduce((s, d) => s + d.score, 0) / sessionData.length;
+        scoreAvgEl.textContent = `avg ${avg.toFixed(1)}`;
+        scoreAvgEl.style.color = avg >= 6 ? '#7a7' : avg >= 3 ? '#aa7' : '#a77';
+      }
+    }
+
+    function finishSession() {
+      if (sessionData.length < 10) return;
+      const duration = sessionData[sessionData.length - 1].t;
+      const avgScore = sessionData.reduce((s, d) => s + d.score, 0) / sessionData.length;
+      const maxScore = Math.max(...sessionData.map(d => d.score));
+      const avgHR = sessionData.reduce((s, d) => s + d.hr, 0) / sessionData.length;
+      const timeAbove5 = sessionData.filter(d => d.score >= 5).length / sessionData.length * 100;
+      const timeAbove7 = sessionData.filter(d => d.score >= 7).length / sessionData.length * 100;
+
+      // sparkline
+      const scores = sessionData.filter((_, i) => i % Math.max(1, Math.floor(sessionData.length / 40)) === 0).map(d => d.score);
+
+      const summary = {
+        exercise: exerciseNames[selectedExercise],
+        duration_s: Math.round(duration),
+        avg_score: Math.round(avgScore * 10) / 10,
+        max_score: Math.round(maxScore * 10) / 10,
+        avg_hr: Math.round(avgHR),
+        time_above_5_pct: Math.round(timeAbove5),
+        time_above_7_pct: Math.round(timeAbove7),
+        samples: sessionData.length,
+        timestamp: new Date().toISOString(),
+      };
+
+      // save to localStorage
+      const sessions = JSON.parse(localStorage.getItem('coherence_sessions') || '[]');
+      sessions.push(summary);
+      localStorage.setItem('coherence_sessions', JSON.stringify(sessions));
+
+      // announce results
+      const msg = `Session complete. ${Math.floor(duration/60)} minutes. Average coherence ${avgScore.toFixed(1)}. ` +
+        `${timeAbove5.toFixed(0)} percent above 5. Peak ${maxScore.toFixed(1)}.`;
+
+      if (audioCtx) {
+        // victory chime if good session
+        if (avgScore >= 5) {
+          const t = audioCtx.currentTime;
+          [1, 5/4, 3/2, 2].forEach((r, i) => {
+            const o = audioCtx.createOscillator();
+            o.type = 'sine'; o.frequency.value = 440 * r;
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(0.04, t + i * 0.15);
+            g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.15 + 1);
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start(t + i * 0.15); o.stop(t + i * 0.15 + 1.2);
+          });
+        }
+      }
+
+      console.log('Session:', summary);
+      alert(`Session: ${Math.floor(duration/60)}m ${Math.round(duration%60)}s\n` +
+        `Avg coherence: ${avgScore.toFixed(1)}/10\n` +
+        `Peak: ${maxScore.toFixed(1)}\n` +
+        `Time ≥5: ${timeAbove5.toFixed(0)}%\n` +
+        `Time ≥7: ${timeAbove7.toFixed(0)}%\n` +
+        `HR avg: ${Math.round(avgHR)}\n` +
+        `Pattern: ${exerciseNames[selectedExercise]}`);
+    }
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
@@ -79,6 +291,8 @@
         scheduler.reset();
       } else if (e.key === ' ') {
         paused = !paused;
+      } else if (e.key === 'b' || e.key === 'B') {
+        if (!audioOn) startAudio(); else stopAudio();
       } else return;
       e.preventDefault();
     });
@@ -164,6 +378,12 @@
 
       const corr = coherence();
       const score = isFinite(corr) ? Math.max(0, Math.min(10, corr * 10)) : 0;
+
+      // audio + recording
+      const seg = scheduler.current();
+      const target = scheduler.targetAmplitude();
+      updateAudio(score, smoothedBR, target, seg.phase, dt);
+      recordTick(score, smoothedHR, smoothedBR, corr);
 
       // ---- render ----
       const dpr = devicePixelRatio;

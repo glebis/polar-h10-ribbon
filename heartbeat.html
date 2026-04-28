@@ -30,7 +30,7 @@ canvas { display:block; width:100%; height:100%; }
 <div id="bpm-display">--</div>
 <div id="info"></div>
 <div id="status">connecting...</div>
-<div id="controls">A=audio S=style F=fullscreen</div>
+<div id="controls">A=audio S=style >=data F=fullscreen</div>
 
 <script>
 (function(){
@@ -247,6 +247,30 @@ canvas { display:block; width:100%; height:100%; }
   let containRadius = 0;
   let containCx = 0, containCy = 0;
 
+  // ring health — degrades with hits, pops when depleted
+  let ringHealth = 1.0;       // 1.0 = solid, 0.0 = popped
+  let ringMaxHealth = 1.0;
+  let ringPopped = false;
+  let ringPopTime = 0;
+  let ringPopRadius = 0;
+  let ringHits = 0;
+  const RING_HIT_DAMAGE = 0.008;  // each collision chips the ring
+  const RING_REGEN = 0.0004;      // slow regeneration
+  const RING_POP_EXPAND = 1.8;    // how much the ring expands on pop
+  const RING_POP_DURATION = 3.0;  // seconds for pop animation
+
+  function hitRing(speed) {
+    if (ringPopped) return;
+    const damage = RING_HIT_DAMAGE * Math.min(2, speed / 100);
+    ringHealth = Math.max(0, ringHealth - damage);
+    ringHits++;
+    if (ringHealth <= 0) {
+      ringPopped = true;
+      ringPopTime = performance.now() / 1000;
+      ringPopRadius = containRadius;
+    }
+  }
+
   // mass from particle type
   function pmass(p) { return p.type === 'bass' ? 4 : p.type === 'mid' ? 1 : 0.3; }
 
@@ -356,7 +380,8 @@ canvas { display:block; width:100%; height:100%; }
       if (inRing) {
         const dx = p.x - containCx, dy = p.y - containCy;
         const dist = Math.sqrt(dx*dx + dy*dy);
-        if (dist > containRadius - p.maxSize) {
+        const boundary = ringPopped ? containRadius * RING_POP_EXPAND : containRadius;
+        if (!ringPopped && dist > containRadius - p.maxSize) {
           const nx = dx/dist, ny = dy/dist;
           p.x = containCx + nx * (containRadius - p.maxSize - 1);
           p.y = containCy + ny * (containRadius - p.maxSize - 1);
@@ -367,6 +392,17 @@ canvas { display:block; width:100%; height:100%; }
           p.vx *= 0.75;
           p.vy *= 0.75;
           playCollisionSound(spd, p.type);
+          hitRing(spd);
+        } else if (ringPopped && dist > boundary - p.maxSize) {
+          // popped ring is a soft, expanded boundary
+          const nx = dx/dist, ny = dy/dist;
+          p.x = containCx + nx * (boundary - p.maxSize - 1);
+          p.y = containCy + ny * (boundary - p.maxSize - 1);
+          const dot = p.vx*nx + p.vy*ny;
+          p.vx -= 1.4 * dot * nx;
+          p.vy -= 1.4 * dot * ny;
+          p.vx *= 0.85;
+          p.vy *= 0.85;
         }
       } else {
         // floor
@@ -452,7 +488,315 @@ canvas { display:block; width:100%; height:100%; }
 
   // Audio mode
   let audioMode = 0;
-  const AUDIO_MODES = ['off', 'bass', 'bass+glass', 'bass+glass+melody', 'all'];
+  const AUDIO_MODES = ['off', 'bass', 'bass+glass', 'bass+glass+chords', 'generative'];
+
+  // ── Generative sequencer engine ──────────────────────────────────
+  // Runs independently, heartbeats push energy into it,
+  // HRV parameters shape everything: scale, density, timbre, rhythm.
+
+  const GEN = {
+    running: false,
+    nextStepTime: 0,
+    stepIndex: 0,
+
+    // Euclidean pattern — density from coherence
+    euclidean(pulses, steps) {
+      const p = new Array(steps).fill(false);
+      if (pulses <= 0) return p;
+      for (let i = 0; i < steps; i++) {
+        if (Math.floor((pulses / steps) * (i + 1)) > Math.floor((pulses / steps) * i)) p[i] = true;
+      }
+      return p;
+    },
+
+    // Scales: RMSSD selects the mode
+    scales: {
+      lydian:     [0, 2, 4, 6, 7, 9, 11],  // dreamy, bright (high HRV)
+      major:      [0, 2, 4, 5, 7, 9, 11],  // stable, happy
+      mixolydian: [0, 2, 4, 5, 7, 9, 10],  // bluesy, relaxed
+      dorian:     [0, 2, 3, 5, 7, 9, 10],  // jazzy, neutral
+      minor:      [0, 2, 3, 5, 7, 8, 10],  // melancholic
+      phrygian:   [0, 1, 3, 5, 7, 8, 10],  // dark, tense (low HRV)
+      locrian:    [0, 1, 3, 5, 6, 8, 10],  // most dissonant
+    },
+    scaleNames: ['lydian', 'major', 'mixolydian', 'dorian', 'minor', 'phrygian', 'locrian'],
+
+    getScale() {
+      const calm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
+      const idx = Math.floor((1 - calm) * (this.scaleNames.length - 0.01));
+      return this.scales[this.scaleNames[idx]];
+    },
+
+    getRoot() {
+      // root follows chord progression from harmonic engine
+      return currentRoot || 130.81;
+    },
+
+    // melodic contour: rising when HRV trending up, falling when down
+    melody: { pos: 3, direction: 1, lastNote: 0 },
+
+    nextNote(scale) {
+      const trend = rrHistory.length > 6 ? (rrHistory[rrHistory.length-1] - rrHistory[rrHistory.length-6]) : 0;
+      // tendency: positive trend = ascending, negative = descending
+      const upProb = 0.5 + Math.max(-0.3, Math.min(0.3, trend * 0.001));
+
+      if (Math.random() < upProb) {
+        this.melody.pos = Math.min(scale.length * 2 - 1, this.melody.pos + 1);
+      } else {
+        this.melody.pos = Math.max(0, this.melody.pos - 1);
+      }
+      // occasional leap
+      if (Math.random() < 0.1) this.melody.pos = Math.floor(Math.random() * scale.length * 2);
+
+      const octave = Math.floor(this.melody.pos / scale.length);
+      const degree = this.melody.pos % scale.length;
+      const semitone = scale[degree] + octave * 12;
+      return this.getRoot() * Math.pow(2, semitone / 12);
+    },
+
+    // voices: bass drone, pad, lead melody, percussion
+    voices: {},
+
+    start(ctx) {
+      if (this.running) return;
+      this.running = true;
+      this.nextStepTime = ctx.currentTime + 0.1;
+
+      // create shared effects
+      this.reverb = ctx.createConvolver();
+      const len = ctx.sampleRate * 2;
+      const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+      for (let ch = 0; ch < 2; ch++) {
+        const d = ir.getChannelData(ch);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.15));
+      }
+      this.reverb.buffer = ir;
+      this.reverbGain = ctx.createGain();
+      this.reverbGain.gain.value = 0.12;
+      this.reverb.connect(this.reverbGain);
+      this.reverbGain.connect(ctx.destination);
+
+      // compressor for glue
+      this.comp = ctx.createDynamicsCompressor();
+      this.comp.threshold.value = -18;
+      this.comp.ratio.value = 4;
+      this.comp.connect(ctx.destination);
+      this.comp.connect(this.reverb);
+
+      this.schedule(ctx);
+    },
+
+    schedule(ctx) {
+      if (!this.running) return;
+
+      const calm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
+      const beatInterval = currentHR > 0 ? 60 / currentHR : 0.8;
+      const stepTime = beatInterval / 4;
+
+      let coherenceVal = 0.5;
+      if (rrHistory.length >= 4) {
+        const mn = rrHistory.reduce((a,b)=>a+b,0)/rrHistory.length;
+        const vr = rrHistory.reduce((a,b)=>a+(b-mn)**2,0)/rrHistory.length;
+        coherenceVal = Math.max(0, Math.min(1, 1 - Math.sqrt(vr)/mn * 5));
+      }
+
+      const steps = 16;
+      const elapsed = ctx.currentTime - (this._startTime || (this._startTime = ctx.currentTime));
+
+      // ── PHRASE STRUCTURE: 4-bar phrases, voice arrangement changes each phrase ──
+      const barIndex = Math.floor(this.stepIndex / steps);
+      const phraseIndex = Math.floor(barIndex / 4);
+      const barInPhrase = barIndex % 4;
+
+      // voice activity pattern per phrase — keeps it evolving
+      const arrangements = [
+        { melody: true, bass: true, perc: false, pad: true },   // intro: melody + pad
+        { melody: true, bass: true, perc: true, pad: false },   // rhythm enters
+        { melody: false, bass: true, perc: true, pad: true },   // melody drops, space
+        { melody: true, bass: true, perc: true, pad: true },    // full
+        { melody: true, bass: false, perc: false, pad: true },  // breakdown
+        { melody: false, bass: true, perc: true, pad: false },  // bass + rhythm only
+      ];
+      const arr = arrangements[phraseIndex % arrangements.length];
+
+      // ── PATTERN ROTATION: Euclidean patterns shift each bar ──
+      const melodyPulses = Math.round(3 + coherenceVal * 6);
+      const bassPulses = Math.round(2 + calm * 3);
+      const percPulses = Math.round(4 + (1-calm) * 6);
+      const rotate = (pat, n) => { const a = [...pat]; for(let i=0;i<n;i++) a.push(a.shift()); return a; };
+      const melodyPattern = rotate(this.euclidean(melodyPulses, steps), barInPhrase * 3);
+      const bassPattern = rotate(this.euclidean(bassPulses, steps), barInPhrase * 2);
+      const percPattern = rotate(this.euclidean(percPulses, steps), barInPhrase);
+
+      const scale = this.getScale();
+      const root = this.getRoot();
+
+      // ── REGISTER SHIFT: melody octave wanders over time ──
+      const octaveShift = Math.floor(Math.sin(elapsed * 0.02) * 1.5);
+
+      // ── SWING: humanize timing ──
+      const swing = 0.02 + calm * 0.04;
+
+      while (this.nextStepTime < ctx.currentTime + 0.15) {
+        const step = this.stepIndex % steps;
+        const stepSwing = step % 2 === 1 ? swing * stepTime : 0;
+        const t = this.nextStepTime + stepSwing;
+        const mv = breath01 || 0;
+
+        // ── MELODY ──
+        if (arr.melody && melodyPattern[step]) {
+          const freq = this.nextNote(scale) * Math.pow(2, octaveShift);
+          // note length variety: short staccato vs long legato
+          const isLong = Math.random() < calm * 0.4;
+          const sustain = isLong ? stepTime * 3 : stepTime * (0.4 + Math.random() * 0.4);
+          const waveTypes = ['sine', 'triangle', 'sawtooth'];
+          const waveIdx = Math.min(2, Math.floor((1 - calm) * 2.5 + Math.random() * 0.5));
+
+          const osc = ctx.createOscillator();
+          osc.type = waveTypes[waveIdx];
+          osc.frequency.value = freq;
+
+          // pitch slide on some notes
+          if (Math.random() < 0.15) {
+            const slideTarget = this.nextNote(scale) * Math.pow(2, octaveShift);
+            osc.frequency.setValueAtTime(freq, t);
+            osc.frequency.exponentialRampToValueAtTime(slideTarget, t + sustain * 0.5);
+          }
+
+          const env = ctx.createGain();
+          const vol = 0.035 + calm * 0.025;
+          const attack = isLong ? 0.05 : 0.005;
+          env.gain.setValueAtTime(0, t);
+          env.gain.linearRampToValueAtTime(vol, t + attack);
+          env.gain.setValueAtTime(vol * (isLong ? 0.6 : 0.8), t + sustain * 0.3);
+          env.gain.exponentialRampToValueAtTime(0.001, t + sustain);
+
+          const filt = ctx.createBiquadFilter();
+          filt.type = 'lowpass';
+          // filter opens and closes with breath
+          filt.frequency.value = 600 + calm * 3500 + mv * 2000 + Math.sin(elapsed * 0.5) * 500;
+          filt.Q.value = 1 + (1-calm) * 4;
+
+          osc.connect(filt); filt.connect(env); env.connect(this.comp);
+          osc.start(t); osc.stop(t + sustain + 0.05);
+
+          // occasional harmony note (third or fifth above)
+          if (Math.random() < coherenceVal * 0.3) {
+            const harmRatio = Math.random() < 0.5 ? 5/4 : 3/2;
+            const h = ctx.createOscillator();
+            h.type = 'sine';
+            h.frequency.value = freq * harmRatio;
+            const hg = ctx.createGain();
+            hg.gain.setValueAtTime(vol * 0.3, t + 0.02);
+            hg.gain.exponentialRampToValueAtTime(0.001, t + sustain * 0.8);
+            h.connect(hg); hg.connect(this.reverb);
+            h.start(t + 0.02); h.stop(t + sustain);
+          }
+        }
+
+        // ── BASS ──
+        if (arr.bass && bassPattern[step]) {
+          const degreePool = [0, 4, 3, 2]; // root, fifth, fourth, third
+          const deg = degreePool[step % degreePool.length];
+          const bassFreq = root * 0.5 * Math.pow(2, (scale[deg % scale.length] || 0) / 12);
+          const osc = ctx.createOscillator();
+          osc.type = barInPhrase % 2 === 0 ? 'sine' : 'triangle';
+          osc.frequency.value = bassFreq;
+          const dur = stepTime * (1.5 + calm);
+          const env = ctx.createGain();
+          env.gain.setValueAtTime(0.055, t);
+          env.gain.exponentialRampToValueAtTime(0.001, t + dur);
+          // sub octave
+          const sub = ctx.createOscillator();
+          sub.type = 'sine';
+          sub.frequency.value = bassFreq * 0.5;
+          const subG = ctx.createGain();
+          subG.gain.setValueAtTime(0.035, t);
+          subG.gain.exponentialRampToValueAtTime(0.001, t + dur);
+          osc.connect(env); env.connect(this.comp);
+          sub.connect(subG); subG.connect(this.comp);
+          osc.start(t); osc.stop(t + dur + 0.05);
+          sub.start(t); sub.stop(t + dur + 0.05);
+        }
+
+        // ── PERCUSSION ──
+        if (arr.perc && percPattern[step]) {
+          const isKick = step % 4 === 0;
+          const isSnare = step % 4 === 2;
+          const isHat = !isKick && !isSnare;
+
+          if (isKick) {
+            const osc = ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(120, t);
+            osc.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.08, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+            osc.connect(g); g.connect(this.comp);
+            osc.start(t); osc.stop(t + 0.2);
+          } else if (isSnare) {
+            const dur = 0.06;
+            const len = Math.floor(ctx.sampleRate * dur);
+            const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1)*Math.exp(-i/(len*0.08));
+            const src = ctx.createBufferSource(); src.buffer = buf;
+            const bp = ctx.createBiquadFilter();
+            bp.type = 'bandpass'; bp.frequency.value = 1200; bp.Q.value = 2;
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.04, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+            src.connect(bp); bp.connect(g); g.connect(this.comp);
+            src.start(t); src.stop(t + dur + 0.01);
+          } else {
+            const dur = 0.02;
+            const len = Math.floor(ctx.sampleRate * dur);
+            const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1)*Math.exp(-i/(len*0.03));
+            const src = ctx.createBufferSource(); src.buffer = buf;
+            const hp = ctx.createBiquadFilter();
+            hp.type = 'highpass'; hp.frequency.value = 7000 + Math.random() * 3000; hp.Q.value = 3;
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.02 * (1 - calm*0.6), t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+            src.connect(hp); hp.connect(g); g.connect(this.comp);
+            src.start(t); src.stop(t + dur + 0.01);
+          }
+        }
+
+        // ── PAD (new chord each bar) ──
+        if (arr.pad && step === 0) {
+          const chordFreqs = getChordFreqs();
+          // pad register shifts between octaves
+          const padOctave = phraseIndex % 3 === 0 ? 1 : phraseIndex % 3 === 1 ? 2 : 0.5;
+          for (let ci = 0; ci < chordFreqs.length; ci++) {
+            const freq = chordFreqs[ci] * padOctave;
+            const osc = ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            const env = ctx.createGain();
+            const padVol = 0.01 + calm * 0.012;
+            // stagger entry for lush feel
+            env.gain.setValueAtTime(0, t + ci * 0.08);
+            env.gain.linearRampToValueAtTime(padVol, t + ci * 0.08 + 0.3);
+            env.gain.setValueAtTime(padVol * 0.7, t + stepTime * steps * 0.5);
+            env.gain.exponentialRampToValueAtTime(0.001, t + stepTime * steps * 0.95);
+            osc.connect(env); env.connect(this.reverb);
+            osc.start(t + ci * 0.08); osc.stop(t + stepTime * steps);
+          }
+        }
+
+        this.stepIndex++;
+        this.nextStepTime += stepTime;
+      }
+
+      setTimeout(() => this.schedule(ctx), 50);
+    },
+
+    stop() { this.running = false; }
+  };
 
   function playHeartSound() {
     if (!audioCtx || audioMode === 0) return;
@@ -461,7 +805,6 @@ canvas { display:block; width:100%; height:100%; }
     const freqs = getChordFreqs();
     const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
     const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
-    const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 40)) : 0.5;
     let coherence = 0.5;
     if (rrHistory.length >= 4) {
       const mean = rrHistory.reduce((a,b)=>a+b,0) / rrHistory.length;
@@ -621,7 +964,13 @@ canvas { display:block; width:100%; height:100%; }
             lastBeatTime = performance.now() / 1000;
             beatPhase = 0;
             expectedInterval = rr / 1000;
-            playHeartSound();
+            if (audioMode === 4 && audioCtx) {
+              // generative mode — engine runs independently, heartbeat just advances harmony
+              advanceHarmony();
+              if (!GEN.running) GEN.start(audioCtx);
+            } else {
+              playHeartSound();
+            }
             spawnBeat(lastBeatTime);
           }
           // Compute RMSSD
@@ -641,13 +990,17 @@ canvas { display:block; width:100%; height:100%; }
   }
   connect();
 
+  // Data overlay
+  let showData = false;
+
   // Keyboard
   document.addEventListener('keydown', (e) => {
     initAudio();
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     const k = e.key.toLowerCase();
     if (k === 'a') { audioMode = (audioMode + 1) % AUDIO_MODES.length; }
-    else if (k === 's') { style = (style + 1) % STYLES.length; }
+    else if (k === 's') { style = (style + 1) % STYLES.length; ringHealth = 1; ringPopped = false; }
+    else if (e.key === '>' || (e.shiftKey && e.key === '.')) { showData = !showData; }
     else if (k === 'f') { document.documentElement.requestFullscreen().catch(()=>{}); }
   });
   document.addEventListener('click', () => { initAudio(); if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); });
@@ -712,26 +1065,77 @@ canvas { display:block; width:100%; height:100%; }
       ctx.fill();
 
     } else if (style === 1) {
-      // RING: pulsing ring that contains particles
+      // RING: pulsing ring that contains particles, degrades with hits
       const baseR = Math.min(W, H) * 0.35;
       const r = baseR + beat * baseR * 0.08;
       containRadius = r;
       containCx = cx;
       containCy = cy;
-      const lineW = 2 + beat * 8 + hrStress * 3;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI*2);
-      ctx.strokeStyle = getColor(hrStress, 0.15 + beat * 0.4);
-      ctx.lineWidth = lineW;
-      ctx.stroke();
 
-      // Ripples expanding outward
+      // regenerate health slowly when not popped
+      if (!ringPopped) {
+        ringHealth = Math.min(1, ringHealth + RING_REGEN);
+      }
+
+      if (ringPopped) {
+        const popAge = now - ringPopTime;
+        const popProgress = Math.min(1, popAge / RING_POP_DURATION);
+
+        // expanding, fading ring
+        const expandR = r + (r * (RING_POP_EXPAND - 1)) * (1 - Math.pow(1 - popProgress, 2));
+        const fadeAlpha = Math.max(0, 0.3 * (1 - popProgress));
+
+        // shattered ring — draw as dashed arcs
+        ctx.save();
+        ctx.setLineDash([15 + popProgress * 30, 10 + popProgress * 40]);
+        ctx.strokeStyle = getColor(hrStress, fadeAlpha);
+        ctx.lineWidth = 1 + (1 - popProgress) * 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, expandR, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+
+        // reset after pop animation completes
+        if (popProgress >= 1) {
+          ringPopped = false;
+          ringHealth = 0.3; // come back weakened
+          ringHits = 0;
+        }
+      } else {
+        // intact ring — opacity and solidity reflect health
+        const healthAlpha = 0.05 + ringHealth * 0.35;
+        const lineW = (1 + ringHealth * 4) + beat * 6 * ringHealth;
+
+        // cracks: draw as dashed when low health
+        if (ringHealth < 0.4) {
+          ctx.setLineDash([20 * ringHealth + 5, 15 * (1 - ringHealth)]);
+        }
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = getColor(hrStress, healthAlpha + beat * 0.2 * ringHealth);
+        ctx.lineWidth = lineW;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // health indicator glow — red when low
+        if (ringHealth < 0.3) {
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255,60,30,${(0.3 - ringHealth) * 1.5})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+
+      // Ripples expanding outward (dimmer when ring is damaged)
       for (let i = 1; i <= 3; i++) {
         const ripplePhase = (beatPhase + i * 0.15) % 1;
         const rippleR = baseR + ripplePhase * baseR * 0.8;
-        const rippleAlpha = Math.max(0, (1 - ripplePhase) * 0.15);
+        const rippleAlpha = Math.max(0, (1 - ripplePhase) * 0.12 * ringHealth);
         ctx.beginPath();
-        ctx.arc(cx, cy, rippleR, 0, Math.PI*2);
+        ctx.arc(cx, cy, rippleR, 0, Math.PI * 2);
         ctx.strokeStyle = getColor(hrStress, rippleAlpha);
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -759,7 +1163,52 @@ canvas { display:block; width:100%; height:100%; }
     const rmssdStr = currentRMSSD > 0 ? currentRMSSD.toFixed(0) + 'ms' : '--';
     const hrvState = getHrvState();
     const chordLabel = audioMode >= 3 ? ` · ${currentChordName}` : '';
-    infoEl.innerHTML = `RMSSD ${rmssdStr} <span style="color:${hrvState.level > 0.5 ? '#7a7' : hrvState.level > 0.3 ? '#aa7' : '#a77'}">${hrvState.label}</span> · ${STYLES[style]} · audio: ${AUDIO_MODES[audioMode]}${chordLabel} · ${particles.length}p`;
+    infoEl.innerHTML = `RMSSD ${rmssdStr} <span style="color:${hrvState.level > 0.5 ? '#7a7' : hrvState.level > 0.3 ? '#aa7' : '#a77'}">${hrvState.label}</span> · ${STYLES[style]} · audio: ${AUDIO_MODES[audioMode]}${chordLabel} · ${particles.length}p` +
+      (style === 1 ? ` · ring ${ringPopped ? 'POP' : (ringHealth*100|0)+'%'}` : '');
+
+    // data overlay (Shift+.)
+    if (showData) {
+      const hrvCalm2 = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
+      const cFreqs = getChordFreqs();
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(W - 260, 10, 250, 300);
+      ctx.font = '12px monospace';
+      ctx.textAlign = 'left';
+      const x0 = W - 250, lh = 18;
+      let y0 = 30;
+      const ln = (label, val, color) => {
+        ctx.fillStyle = '#666'; ctx.fillText(label, x0, y0);
+        ctx.fillStyle = color || '#ccc'; ctx.fillText(val, x0 + 100, y0);
+        y0 += lh;
+      };
+      ln('HR', `${currentHR} bpm`, '#e06a7a');
+      ln('RMSSD', `${currentRMSSD.toFixed(1)} ms`, '#4af');
+      ln('hrvCalm', `${(hrvCalm2*100).toFixed(0)}%`, hrvCalm2 > 0.5 ? '#7a7' : '#a77');
+      ln('hrStress', `${(hrStress*100).toFixed(0)}%`, '#e06a7a');
+      ln('beat', `${beat.toFixed(2)}`, '#888');
+      let coh = 0;
+      if (rrHistory.length >= 4) {
+        const mn = rrHistory.reduce((a,b)=>a+b,0)/rrHistory.length;
+        const vr = rrHistory.reduce((a,b)=>a+(b-mn)**2,0)/rrHistory.length;
+        coh = Math.max(0, Math.min(1, 1 - Math.sqrt(vr)/mn * 5));
+      }
+      ln('coherence', `${coh.toFixed(2)}`, '#aa7');
+      ln('chord', currentChordName, '#c89000');
+      ln('root', `${currentRoot.toFixed(0)} Hz`, '#c89000');
+      ln('freqs', cFreqs.map(f => f.toFixed(0)).join(' '), '#555');
+      ln('particles', `${particles.length}`, '#888');
+      ln('bass/mid/glass',
+        `${particles.filter(p=>p.type==='bass').length}/${particles.filter(p=>p.type==='mid').length}/${particles.filter(p=>p.type==='glass').length}`,
+        '#888');
+      if (style === 1) {
+        ln('ring HP', `${(ringHealth*100).toFixed(0)}%`, ringHealth < 0.3 ? '#e44' : '#7a7');
+        ln('ring hits', `${ringHits}`, '#888');
+      }
+      ln('audio', AUDIO_MODES[audioMode], '#888');
+      ln('RR buf', `${rrHistory.length}`, '#555');
+      ctx.restore();
+    }
 
     requestAnimationFrame(render);
   }

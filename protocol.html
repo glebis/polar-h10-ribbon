@@ -71,6 +71,32 @@
            padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 11px; }
     .tag .cat { color: #888; }
 
+    .insight { border-left: 3px solid #333; padding: 12px 16px; margin: 12px 0; background: #0a0a0e;
+               border-radius: 0 4px 4px 0; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+    .insight .i-text { }
+    .insight .i-title { font-size: 13px; color: #ddd; margin-bottom: 4px; }
+    .insight .i-body { font-size: 12px; color: #888; line-height: 1.65; }
+    .insight .i-ref { font-size: 10px; color: #444; margin-top: 6px; font-style: italic; }
+    .insight .i-spark { min-width: 100px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .insight .i-spark .i-big { font-size: 24px; color: #fff; font-variant-numeric: tabular-nums; line-height: 1; }
+    .insight .i-spark .i-unit { font-size: 10px; color: #555; }
+    .insight.warning { border-color: #a55; }
+    .insight.caution { border-color: #a85; }
+    .insight.positive { border-color: #5a7; }
+    .insight.info { border-color: #57a; }
+    .insight.data { border-color: #777; }
+    .insight.protocol { border-color: #a7a; }
+
+    .summary-bar { display: flex; gap: 24px; margin-bottom: 14px; padding: 12px 0; border-bottom: 1px solid #1a1a22;
+                   flex-wrap: wrap; }
+    .summary-bar .s-item { display: flex; flex-direction: column; gap: 2px; }
+    .summary-bar .s-item .s-val { font-size: 24px; color: #fff; font-variant-numeric: tabular-nums; line-height: 1; }
+    .summary-bar .s-item .s-lbl { font-size: 10px; color: #555; text-transform: uppercase; }
+    .summary-bar .s-item .s-spark { margin-top: 4px; }
+
+    @keyframes pulse-load { 0%,100% { opacity: 0.3; } 50% { opacity: 0.7; } }
+    .loading { animation: pulse-load 1.5s ease-in-out infinite; color: #444; font-size: 12px; }
+
     .empty { color: #444; font-style: italic; font-size: 12px; }
     .refresh-btn { position: fixed; top: 14px; right: 20px; font: 11px monospace;
                    background: none; border: 1px solid #333; color: #666; padding: 3px 10px;
@@ -100,7 +126,7 @@
       <div>
         <div class="card" id="today-card">
           <h2>today</h2>
-          <div id="today-content"><span class="empty">loading…</span></div>
+          <div id="today-content"><span class="loading">loading…</span></div>
         </div>
         <div class="card" style="margin-top:16px">
           <h2>context tags</h2>
@@ -123,7 +149,7 @@
       <!-- RIGHT: weekly -->
       <div class="card" id="weekly-card">
         <h2>weekly trend</h2>
-        <div id="weekly-content"><span class="empty">loading…</span></div>
+        <div id="weekly-content"><span class="loading">loading…</span></div>
       </div>
     </div>
 
@@ -133,10 +159,28 @@
       <canvas id="monthly-chart"></canvas>
     </div>
 
+    <!-- protocol recommendations -->
+    <div class="card" style="margin-top:16px" id="protocol-card">
+      <h2>protocol & targets</h2>
+      <div id="protocol-content"></div>
+    </div>
+
+    <!-- analytics -->
+    <div class="card" style="margin-top:16px" id="analytics-card">
+      <h2>statistical analysis</h2>
+      <div id="analytics-content"><span class="loading">loading…</span></div>
+    </div>
+
+    <!-- insights -->
+    <div class="card" style="margin-top:16px" id="insights-card">
+      <h2>clinical insights</h2>
+      <div id="insights-content"><span class="loading">loading…</span></div>
+    </div>
+
     <!-- sessions -->
     <div class="card" style="margin-top:16px">
       <h2>session log</h2>
-      <div id="sessions-content"><span class="empty">loading…</span></div>
+      <div id="sessions-content"><span class="loading">loading…</span></div>
     </div>
   </div>
 
@@ -167,15 +211,34 @@
       catch(e) { return iso.slice(11,16); }
     }
 
-    function sparkSvg(values, w=80, h=24, color='#4af') {
+    function sparkSvg(values, w=80, h=24, color='#4af', opts={}) {
       if (!values || values.length < 2) return '';
+      const pad = 2;
       const mn = Math.min(...values), mx = Math.max(...values);
       const rng = mx - mn || 1;
-      const pts = values.map((v,i) =>
-        `${(i/(values.length-1))*w},${h - ((v-mn)/rng)*h*0.85 - h*0.05}`
-      ).join(' ');
-      return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/>
+      const step = (w - pad * 2) / (values.length - 1);
+
+      const pts = values.map((v, i) => {
+        const x = pad + i * step;
+        const y = h - pad - ((v - mn) / rng) * (h - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+
+      const lastX = pad + (values.length - 1) * step;
+      const lastY = h - pad - ((values[values.length-1] - mn) / rng) * (h - pad * 2);
+      const areaPoints = [`${pad},${h-pad}`, ...pts, `${lastX.toFixed(1)},${h-pad}`].join(' ');
+
+      let threshold = '';
+      if (opts.threshold != null) {
+        const ty = h - pad - ((opts.threshold - mn) / rng) * (h - pad * 2);
+        threshold = `<line x1="${pad}" y1="${ty.toFixed(1)}" x2="${w-pad}" y2="${ty.toFixed(1)}" stroke="${opts.thresholdColor || '#555'}" stroke-width="0.5" stroke-dasharray="2,2"/>`;
+      }
+
+      return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle">
+        <polygon points="${areaPoints}" fill="${color}" opacity="0.12"/>
+        ${threshold}
+        <polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round"/>
+        <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2" fill="${color}"/>
       </svg>`;
     }
 
@@ -393,15 +456,208 @@
       if (tags) renderTags(tags);
     }
 
+    function renderProtocol(analytics, insights) {
+      const el = document.getElementById('protocol-content');
+      const s = insights?.summary || {};
+      const a = analytics || {};
+
+      // targets table
+      const targets = [
+        { metric: 'RMSSD', unit: 'ms', current: s.rmssd_avg, w4: '35–38', w8: '40–50', w12: '50–60', color: '#4af' },
+        { metric: 'SDNN', unit: 'ms', current: s.sdnn_avg, w4: '65–70', w8: '75–85', w12: '85–100', color: '#2a7a5a' },
+        { metric: 'DFA α1', unit: '', current: a.dfa_alpha1?.value, w4: '1.10–1.15', w8: '0.95–1.05', w12: '0.85–0.95', color: '#2a7a5a' },
+        { metric: 'Resting HR', unit: 'bpm', current: s.hr_avg, w4: '72', w8: '68–70', w12: '65–68', color: '#e06a7a' },
+        { metric: 'pNN50', unit: '%', current: a.pnn50?.value, w4: '8–10', w8: '12–18', w12: '18–25', color: '#a7a' },
+        { metric: 'Stress load', unit: '%', current: a.stress_recovery?.stress_pct, w4: '18', w8: '14', w12: '<12', color: '#a55' },
+      ];
+
+      let html = '<table><tr><th>metric</th><th>current</th><th>4 weeks</th><th>8 weeks</th><th>12 weeks</th></tr>';
+      for (const t of targets) {
+        const cur = t.current != null ? `<span style="color:${t.color}">${t.current}${t.unit ? ' ' + t.unit : ''}</span>` : '—';
+        html += `<tr><td>${t.metric}</td><td>${cur}</td><td>${t.w4}</td><td>${t.w8}</td><td>${t.w12}</td></tr>`;
+      }
+      html += '</table>';
+
+      // interventions
+      const interventions = [
+        { name: 'Resonance breathing', dose: '20 min/day, 5–7×/week at personal resonant frequency (4.5–6.5 bpm)',
+          effect: 'RMSSD +13–86%, anxiety symptoms within 2–3 weeks',
+          ref: 'Springer 2025 meta-analysis; PMC 2025 GAD study', priority: 1 },
+        { name: 'Cold shower', dose: '2–3 min at 10–15°C, finish with cold, 3×/week minimum. Breathe slowly (4–6/min) during exposure',
+          effect: 'Acute: RMSSD +0.61 SMD. Chronic: regular cold swimmers show RMSSD 62 vs 45ms in controls',
+          ref: 'PubMed 2025 systematic review', priority: 1 },
+        { name: 'Aerobic exercise', dose: '30–45 min Zone 2 (where DFA α1 ≈ 0.75), 4×/week',
+          effect: 'Trains autonomic flexibility, lowers DFA α1 toward healthy range',
+          ref: 'Plews et al. 2013, Int J Sports Physiol Perform', priority: 1 },
+        { name: 'Cannabis timing', dose: 'Use THC-dominant/low-CBD strains only. Use 4+ hours before sleep. Smoking (not edibles) partially induces CYP1A2, offsetting slow metabolizer status',
+          effect: '⚠ CBD is CONTRAINDICATED — triples CYP2C19 substrate exposure → sertraline levels 2-3×. Serotonin syndrome risk. THC alone is pharmacokinetically safer. Could recover 10–15ms overnight RMSSD with timing shift',
+          ref: 'PGx Card: Bansal 2023 (CBD/CYP2C19). Cannabis/CYP1A2: AhR pathway induction', priority: 2 },
+        { name: 'Omega-3 (EPA)', dose: '2–3g/day EPA+DHA. No CYP pathway — safe with sertraline. Also indicated for CRP management (PGx card: CRP 1–3 range → add EPA)',
+          effect: 'RMSSD +9.9%, HRV total power +20.6%. Mild antidepressant synergy with SSRIs. Anti-inflammatory (relevant: PNPLA3 G;G liver load)',
+          ref: 'Nature 2023 meta-analysis', priority: 2 },
+        { name: 'taVNS device', dose: '15–30 min/day auricular vagus stimulation (Nurosym, Pulsetto). Non-pharmacological — no CYP/SSRI interactions. Targets vagal-serotonergic pathway (relevant: SLC6A4 A;G variant)',
+          effect: 'Increased RMSSD in low-baseline individuals. GAD-7 improved. Your profile: SLC6A4 A;G + 5-HT1A C;C = dual serotonergic target. No drug interactions',
+          ref: 'Nature 2025 taVNS study', priority: 2 },
+        { name: 'Exercise (genetically first-line)', dose: 'Zone 2 aerobic 30–45 min 4×/week (DFA α1 target: 0.75 during exercise). HIIT 2–3×/week for BDNF release',
+          effect: 'BDNF Val/Val = full exercise-induced neuroplasticity. OPRM1 A;G = amplified endorphin anxiolysis. Your strongest genetic advantage for anxiety treatment',
+          ref: 'PGx Card: BDNF rs6265 G;G + OPRM1 rs1799971 A;G', priority: 1 },
+      ];
+
+      html += '<div style="margin-top:16px">';
+      for (const iv of interventions) {
+        const pcolor = iv.priority === 1 ? '#2a7a5a' : iv.priority === 2 ? '#c89000' : '#555';
+        const plabel = iv.priority === 1 ? 'primary' : iv.priority === 2 ? 'supporting' : 'optional';
+        html += `<div class="insight" style="border-color:${pcolor};display:block;margin:8px 0">`;
+        html += `<div style="display:flex;justify-content:space-between;align-items:baseline">`;
+        html += `<div class="i-title">${iv.name}</div>`;
+        html += `<span style="font-size:9px;color:${pcolor};text-transform:uppercase">${plabel}</span>`;
+        html += '</div>';
+        html += `<div class="i-body"><strong>Dose:</strong> ${iv.dose}<br><strong>Effect:</strong> ${iv.effect}</div>`;
+        html += `<div class="i-ref">${iv.ref}</div>`;
+        html += '</div>';
+      }
+      html += '</div>';
+
+      el.innerHTML = html;
+    }
+
+    function renderAnalytics(data) {
+      const el = document.getElementById('analytics-content');
+      if (!data) { el.innerHTML = '<span class="empty">API not running</span>'; return; }
+
+      const metrics = [
+        { key: 'poincare', label: 'Poincaré Plot', color: '#4af',
+          render: d => `<div class="i-big" style="color:#4af">SD1 ${d.sd1} <span style="color:#555;font-size:14px">/</span> SD2 ${d.sd2}</div>
+            <div class="i-unit">ratio ${d.ratio}</div>` },
+        { key: 'dfa_alpha1', label: 'DFA α1', color: '#2a7a5a',
+          render: d => `<div class="i-big" style="color:#2a7a5a">${d.value}</div><div class="i-unit">fractal scaling</div>` },
+        { key: 'sample_entropy', label: 'Sample Entropy', color: '#c89000',
+          render: d => `<div class="i-big" style="color:#c89000">${d.value}</div><div class="i-unit">complexity</div>` },
+        { key: 'pnn50', label: 'pNN50', color: '#a7a',
+          render: d => `<div class="i-big" style="color:#a7a">${d.value}%</div><div class="i-unit">pNN20 ${d.pnn20}%</div>` },
+        { key: 'rmssd_sdnn_ratio', label: 'RMSSD/SDNN', color: '#57a',
+          render: d => `<div class="i-big" style="color:#57a">${d.value}</div><div class="i-unit">vagal ratio</div>` },
+        { key: 'triangular_index', label: 'HRV Tri Index', color: '#7a7',
+          render: d => `<div class="i-big" style="color:#7a7">${d.value}</div><div class="i-unit">geometric</div>` },
+        { key: 'stress_recovery', label: 'Stress/Recovery', color: '#a55',
+          render: d => `<div class="i-big" style="color:#a55">${d.stress_pct}%</div><div class="i-unit">stress load · ${d.total_stress_min}min</div>` },
+      ];
+
+      // session SD1 sparkline at the top
+      let html = '';
+      if (data.session_sd1 && data.session_sd1.length > 2) {
+        html += `<div style="margin-bottom:14px"><span style="font-size:10px;color:#555;text-transform:uppercase">SD1 per session</span> ${sparkSvg(data.session_sd1, 200, 24, '#4af')}</div>`;
+      }
+
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">';
+
+      for (const m of metrics) {
+        const d = data[m.key];
+        if (!d) continue;
+        html += `<div class="insight ${d.value != null || d.sd1 != null ? '' : 'data'}" style="display:block;border-color:${m.color}33">`;
+        html += `<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">`;
+        html += `<div><div style="font-size:10px;color:#555;text-transform:uppercase;margin-bottom:4px">${m.label}</div>`;
+        html += `<div style="font-size:11px;color:#777;line-height:1.5">${d.interpretation || ''}</div>`;
+        if (d.what) html += `<div style="font-size:10px;color:#444;margin-top:4px">${d.what}</div>`;
+        if (d.ref) html += `<div class="i-ref">${d.ref}</div>`;
+        html += '</div>';
+        html += `<div style="text-align:right">${m.render(d)}</div>`;
+        html += '</div></div>';
+      }
+
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    function renderInsights(data) {
+      const el = document.getElementById('insights-content');
+      if (!data || !data.insights) {
+        el.innerHTML = '<span class="empty">API not running — start protocol_api.py</span>';
+        return;
+      }
+
+      const sp = data.sparklines || {};
+      let html = '';
+
+      // summary bar with sparklines
+      if (data.summary) {
+        const s = data.summary;
+        html += '<div class="summary-bar">';
+        html += `<div class="s-item"><div class="s-val">${s.rmssd_avg}</div><div class="s-lbl">RMSSD ms</div>`;
+        if (sp.rmssd && sp.rmssd.length > 2) html += `<div class="s-spark">${sparkSvg(sp.rmssd, 100, 20, '#4af')}</div>`;
+        html += '</div>';
+        if (s.sdnn_avg) {
+          html += `<div class="s-item"><div class="s-val">${s.sdnn_avg}</div><div class="s-lbl">SDNN ms</div>`;
+          if (sp.sdnn && sp.sdnn.length > 2) html += `<div class="s-spark">${sparkSvg(sp.sdnn, 100, 20, '#2a7a5a')}</div>`;
+          html += '</div>';
+        }
+        if (s.hr_avg) {
+          html += `<div class="s-item"><div class="s-val">${s.hr_avg}</div><div class="s-lbl">HR avg</div>`;
+          if (sp.hr && sp.hr.length > 2) html += `<div class="s-spark">${sparkSvg(sp.hr, 100, 20, '#e06a7a')}</div>`;
+          html += '</div>';
+        }
+        html += `<div class="s-item"><div class="s-val">${s.total_samples.toLocaleString()}</div><div class="s-lbl">samples</div></div>`;
+        html += `<div class="s-item"><div class="s-val">${s.total_hours}</div><div class="s-lbl">hours</div></div>`;
+        // session-to-session trend
+        if (sp.session_rmssd && sp.session_rmssd.length > 2) {
+          html += `<div class="s-item"><div class="s-lbl">per session</div><div class="s-spark">${sparkSvg(sp.session_rmssd, 120, 22, '#c89000')}</div></div>`;
+        }
+        html += '</div>';
+      }
+
+      // color map for sparklines per metric type
+      const sparkColors = { sdnn: '#2a7a5a', rmssd: '#4af', hr: '#e06a7a', stress: '#a55',
+                             overnight: '#7a7', circadian: '#c89000', adherence: '#a7a' };
+
+      for (const insight of data.insights) {
+        const color = sparkColors[insight.metric] || '#4af';
+        html += `<div class="insight ${insight.type}">`;
+        html += '<div class="i-text">';
+        html += `<div class="i-title">${insight.title}</div>`;
+        html += `<div class="i-body">${insight.body}</div>`;
+        if (insight.ref) html += `<div class="i-ref">${insight.ref}</div>`;
+        html += '</div>';
+
+        // right side: sparkline + big number
+        html += '<div class="i-spark">';
+        if (insight.value != null) {
+          html += `<div class="i-big" style="color:${color}">${insight.value}</div>`;
+          html += `<div class="i-unit">${insight.metric === 'hr' ? 'bpm' : 'ms'}</div>`;
+        }
+        if (insight.metric && sp[insight.metric] && sp[insight.metric].length > 2) {
+          const threshOpts = insight.threshold ? { threshold: insight.threshold, thresholdColor: '#a55' } : {};
+          html += sparkSvg(sp[insight.metric], 100, 28, color, threshOpts);
+        } else if (insight.metric === 'stress' && sp.stress && sp.stress.length > 2) {
+          html += sparkSvg(sp.stress, 100, 28, '#a55');
+        } else if (insight.metric === 'overnight' && sp.rmssd && sp.rmssd.length > 2) {
+          html += sparkSvg(sp.rmssd, 100, 28, '#7a7');
+        }
+        if (insight.per_hour != null) {
+          html += `<div class="i-big" style="color:${color};font-size:18px">${insight.per_hour}</div>`;
+          html += '<div class="i-unit">per hour</div>';
+        }
+        html += '</div>';
+        html += '</div>';
+      }
+
+      el.innerHTML = html;
+    }
+
     async function init() {
-      const [daily, weekly, monthly, sessions, tags, trend] = await Promise.all([
-        get('/daily'), get('/weekly'), get('/monthly'),
-        get('/sessions?limit=30'), get('/tags'), get('/trend')
-      ]);
+      // render trend first for fast perceived load
+      const trend = await get('/trend');
       renderTrend(trend);
+
+      const [daily, weekly, monthly, sessions, tags, insights, analytics] = await Promise.all([
+        get('/daily'), get('/weekly'), get('/monthly'),
+        get('/sessions?limit=30'), get('/tags'), get('/insights'), get('/analytics')
+      ]);
       renderDaily(daily);
       renderWeekly(weekly);
       renderMonthly(monthly);
+      renderProtocol(analytics, insights);
+      renderAnalytics(analytics);
+      renderInsights(insights);
       renderSessions(sessions);
       renderTags(tags);
     }

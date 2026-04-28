@@ -13,6 +13,7 @@ import json
 import math
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.request
@@ -174,12 +175,104 @@ class HRVState:
 
     @property
     def drop_intensity(self) -> float:
-        # Use absolute RMSSD position within a personal range rather than
-        # ratio to baseline, so the color always has dynamic range.
-        # 3ms = fully dropped, 30ms+ = fully calm
         low, high = 3.0, 30.0
         t = (self.current_rmssd - low) / (high - low)
         return 1.0 - max(0.0, min(1.0, t))
+
+
+# ── Signal quality monitor ──────────────────────────────────────────────
+
+def notify(title: str, message: str, sound: str = "Basso", speak: str = ""):
+    subprocess.Popen([
+        "osascript", "-e",
+        f'display notification "{message}" with title "{title}" sound name "{sound}"'
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if speak:
+        subprocess.Popen(["say", "-v", "Samantha", "-r", "180", speak],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@dataclass
+class SignalQuality:
+    # artifact detection
+    artifact_count: int = 0
+    artifact_window: deque = field(default_factory=lambda: deque(maxlen=30))
+    last_notification: float = 0
+    NOTIFY_COOLDOWN: float = 30.0  # don't spam
+
+    # connection quality
+    last_hr_time: float = 0
+    last_rr_time: float = 0
+    rr_gap_count: int = 0
+
+    # battery
+    last_battery: int = -1
+    battery_warned: bool = False
+
+    def check_rr(self, rr_ms: int, hr: int, rmssd: float) -> str | None:
+        now = time.time()
+        self.last_rr_time = now
+
+        # artifact: RMSSD > 150ms with HR > 80 = missed beats
+        is_artifact = rmssd > 150 and hr > 80
+        self.artifact_window.append(1 if is_artifact else 0)
+        artifact_pct = sum(self.artifact_window) / len(self.artifact_window) if self.artifact_window else 0
+
+        if artifact_pct > 0.5 and len(self.artifact_window) >= 10:
+            return self._warn("poor_contact",
+                "Poor strap contact — adjust or wet electrodes",
+                f"RMSSD {rmssd:.0f}ms is artifact ({artifact_pct*100:.0f}% bad readings)",
+                speak="Poor strap contact. Adjust or wet the electrodes.")
+
+        if rr_ms < 250:
+            return self._warn("rr_too_short",
+                "RR interval too short — possible double-detection",
+                f"RR={rr_ms}ms ({60000/rr_ms:.0f}bpm)",
+                speak="Signal error. Double beat detected.")
+
+        if rr_ms > 1800:
+            return self._warn("rr_too_long",
+                "RR interval too long — possible missed beats",
+                f"RR={rr_ms}ms ({60000/rr_ms:.0f}bpm)",
+                speak="Signal error. Missed heartbeat.")
+
+        # sudden HR jump (>40 bpm change between beats)
+        if len(self.artifact_window) >= 2:
+            prev_rr = None
+            buf = list(self.artifact_window)
+            # we don't store RR in the window, but RMSSD spike is the proxy
+            pass
+
+        return None
+
+    def check_hr_timeout(self) -> str | None:
+        now = time.time()
+        if self.last_rr_time > 0 and now - self.last_rr_time > 10:
+            return self._warn("no_rr",
+                "No RR intervals for 10s",
+                "Strap may have lost contact",
+                speak="No heartbeat signal. Check the strap.")
+        return None
+
+    def check_battery(self, pct: int) -> str | None:
+        if pct == self.last_battery:
+            return None
+        self.last_battery = pct
+        if pct <= 15 and not self.battery_warned:
+            self.battery_warned = True
+            return self._warn("low_battery",
+                f"Polar H10 battery low: {pct}%",
+                "Charge after this session", sound="Purr",
+                speak=f"Battery at {pct} percent.")
+        return None
+
+    def _warn(self, kind: str, title: str, message: str, sound: str = "Basso", speak: str = "") -> str:
+        now = time.time()
+        if now - self.last_notification < self.NOTIFY_COOLDOWN:
+            return f"[{kind}] {message}"
+        self.last_notification = now
+        notify(title, message, sound, speak=speak)
+        return f"[{kind}] {title}: {message}"
 
 
 # ── Light presets ────────────────────────────────────────────────────────
@@ -517,7 +610,7 @@ async def dash_broadcast(msg: dict):
         return
     payload = json.dumps(msg)
     dead = []
-    for ws in dash_clients:
+    for ws in list(dash_clients):
         try:
             await ws.send(payload)
         except Exception:
@@ -533,6 +626,7 @@ async def run(args):
     light = LightState()
     light.set_preset(args.preset)
     _light_ref[0] = light
+    sig = SignalQuality()
 
     # seed baseline from SQLite (all historical sessions)
     db_baseline, db_count = load_baseline_from_db()
@@ -565,11 +659,16 @@ async def run(args):
                     if msg.get("type") == "acc":
                         hrv.add_acc(msg.get("samples", []))
 
+                    if msg.get("type") == "battery":
+                        sig.check_battery(msg.get("pct", -1))
+
                     if msg.get("type") == "hr":
                         hrv.current_hr = msg["bpm"]
                         for rr in msg.get("rr", []):
                             if not hrv.add_rr(rr):
                                 continue
+
+                            sig.check_rr(rr, hrv.current_hr, hrv.current_rmssd)
 
                             light.update_from_hrv(hrv)
                             now = time.time()
@@ -620,6 +719,7 @@ async def run(args):
                                 "pulse_bpm": round(light.pulse_bpm, 1),
                                 "movement": round(hrv.movement, 3),
                                 "preset": light.preset_name,
+                                "signal_ok": sum(sig.artifact_window) < len(sig.artifact_window) * 0.3 if sig.artifact_window else True,
                             }
 
                             await dash_broadcast({"type": "tick", **row})

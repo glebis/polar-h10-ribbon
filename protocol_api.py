@@ -234,6 +234,436 @@ def api_trend_signal(conn):
     }
 
 
+def api_analytics(conn):
+    """Deep statistical analysis of HRV data — computed server-side."""
+    result = {}
+
+    # ── pNN50: % of successive RR diffs > 50ms ──
+    rr_rows = conn.execute("""
+        SELECT rr_ms FROM rr_intervals
+        WHERE rr_ms > 200 AND rr_ms < 2000
+        ORDER BY ts
+    """).fetchall()
+    rr = [r["rr_ms"] for r in rr_rows]
+
+    if len(rr) > 10:
+        diffs = [abs(rr[i+1] - rr[i]) for i in range(len(rr)-1)]
+        pnn50 = sum(1 for d in diffs if d > 50) / len(diffs) * 100
+        pnn20 = sum(1 for d in diffs if d > 20) / len(diffs) * 100
+        mean_rr = sum(rr) / len(rr)
+        result["pnn50"] = {
+            "value": round(pnn50, 1),
+            "pnn20": round(pnn20, 1),
+            "n": len(rr),
+            "interpretation": (
+                "High parasympathetic activity" if pnn50 > 20 else
+                "Normal vagal modulation" if pnn50 > 5 else
+                "Low vagal modulation — consistent with anxiety"
+            ),
+            "ref": "Bigger JT et al. Am J Cardiol. 1992;69(11):891-898"
+        }
+
+    # ── Poincaré SD1/SD2 from stored RMSSD and SDNN ──
+    hrv_stats = conn.execute("""
+        SELECT AVG(rmssd) as rmssd, AVG(sdnn) as sdnn
+        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150 AND sdnn > 1
+    """).fetchone()
+
+    if hrv_stats["rmssd"] and hrv_stats["sdnn"]:
+        rmssd_val = hrv_stats["rmssd"]
+        sdnn_val = hrv_stats["sdnn"]
+        sd1 = rmssd_val / math.sqrt(2)
+        sd2_sq = 2 * sdnn_val**2 - 0.5 * rmssd_val**2
+        sd2 = math.sqrt(max(0, sd2_sq))
+        ratio = sd1 / sd2 if sd2 > 0 else 0
+
+        result["poincare"] = {
+            "sd1": round(sd1, 1),
+            "sd2": round(sd2, 1),
+            "ratio": round(ratio, 3),
+            "interpretation": (
+                "Vagal dominant (ratio > 0.5)" if ratio > 0.5 else
+                "Sympathetic shift (ratio < 0.3)" if ratio < 0.3 else
+                "Balanced autonomic modulation"
+            ),
+            "what": "SD1 = short-term vagal variability, SD2 = longer-term. Ratio tracks autonomic balance.",
+            "ref": "Brennan M et al. IEEE Trans Biomed Eng. 2001;48(11):1342-1347"
+        }
+
+    # ── RMSSD/SDNN ratio ──
+    if hrv_stats["rmssd"] and hrv_stats["sdnn"] and hrv_stats["sdnn"] > 0:
+        ratio = hrv_stats["rmssd"] / hrv_stats["sdnn"]
+        result["rmssd_sdnn_ratio"] = {
+            "value": round(ratio, 3),
+            "interpretation": (
+                "Vagal dominant" if ratio > 0.5 else
+                "Mixed autonomic" if ratio > 0.3 else
+                "Sympathetic dominant"
+            ),
+            "what": "Values > 0.5 suggest parasympathetic predominance. Lower values = more sympathetic input."
+        }
+
+    # ── Per-session Poincaré SD1 sparkline ──
+    session_sd1 = []
+    for row in conn.execute("""
+        SELECT session_id, AVG(rmssd) as rmssd
+        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150
+        GROUP BY session_id ORDER BY session_id
+    """).fetchall():
+        session_sd1.append(round(row["rmssd"] / math.sqrt(2), 1))
+    result["session_sd1"] = session_sd1
+
+    # ── Sample Entropy (approximation from RR intervals, last 1000 beats) ──
+    if len(rr) >= 200:
+        window = rr[-min(1000, len(rr)):]
+        m = 2
+        r_tol = 0.2 * (sum((x - sum(window)/len(window))**2 for x in window) / len(window)) ** 0.5
+
+        def count_matches(data, template_len, tol):
+            n = len(data) - template_len
+            count = 0
+            for i in range(n):
+                for j in range(i+1, n):
+                    match = True
+                    for k in range(template_len):
+                        if abs(data[i+k] - data[j+k]) > tol:
+                            match = False
+                            break
+                    if match:
+                        count += 1
+            return count
+
+        b = count_matches(window, m, r_tol)
+        a = count_matches(window, m+1, r_tol)
+
+        if b > 0 and a > 0:
+            sampen = -math.log(a / b)
+            result["sample_entropy"] = {
+                "value": round(sampen, 3),
+                "window_size": len(window),
+                "interpretation": (
+                    "High complexity — healthy autonomic flexibility" if sampen > 1.5 else
+                    "Moderate complexity" if sampen > 1.0 else
+                    "Low complexity — reduced autonomic adaptability"
+                ),
+                "what": "Measures unpredictability of RR intervals. Higher = more complex = healthier. "
+                        "Anxiety and aging both reduce sample entropy.",
+                "ref": "Richman JS & Moorman JR. Am J Physiol. 2000;278(6):H2039-H2049"
+            }
+
+    # ── Stress-recovery analysis ──
+    stress_stats = conn.execute("""
+        SELECT COUNT(*) as n, SUM(duration_s) as total_stress_s,
+               AVG(severity) as avg_sev, AVG(rmssd_at_event) as avg_rmssd
+        FROM stress_events
+    """).fetchone()
+
+    total_recording_s = conn.execute("""
+        SELECT SUM(max_ts - min_ts) as total
+        FROM (SELECT MIN(ts) as min_ts, MAX(ts) as max_ts FROM rr_intervals GROUP BY session_id)
+    """).fetchone()["total"] or 1
+
+    if stress_stats["n"] > 0 and stress_stats["total_stress_s"]:
+        stress_pct = stress_stats["total_stress_s"] / total_recording_s * 100
+        recovery_pct = 100 - stress_pct
+        result["stress_recovery"] = {
+            "stress_pct": round(stress_pct, 1),
+            "recovery_pct": round(recovery_pct, 1),
+            "total_stress_min": round(stress_stats["total_stress_s"] / 60, 1),
+            "total_recording_min": round(total_recording_s / 60, 1),
+            "avg_event_duration_s": round(stress_stats["total_stress_s"] / stress_stats["n"]),
+            "interpretation": (
+                "High stress load — more than 30% of recording time" if stress_pct > 30 else
+                "Moderate stress load" if stress_pct > 15 else
+                "Good recovery capacity — stress events are brief"
+            )
+        }
+
+    # ── DFA alpha1 (detrended fluctuation analysis) ──
+    if len(rr) >= 500:
+        window = rr[-min(2000, len(rr)):]
+        n = len(window)
+        mean_rr = sum(window) / n
+        integrated = []
+        cumsum = 0
+        for v in window:
+            cumsum += (v - mean_rr)
+            integrated.append(cumsum)
+
+        scales = [s for s in [4, 6, 8, 12, 16, 24, 32, 48, 64] if s <= n // 4]
+        if len(scales) >= 4:
+            log_n = []
+            log_f = []
+            for s in scales:
+                num_segments = n // s
+                fluctuations = []
+                for seg in range(num_segments):
+                    start = seg * s
+                    segment = integrated[start:start+s]
+                    # linear detrend
+                    xs = list(range(s))
+                    mx = (s - 1) / 2
+                    my = sum(segment) / s
+                    num = sum((x - mx) * (y - my) for x, y in zip(xs, segment))
+                    den = sum((x - mx)**2 for x in xs)
+                    slope = num / den if den > 0 else 0
+                    intercept = my - slope * mx
+                    residuals = [(segment[i] - (slope * i + intercept))**2 for i in range(s)]
+                    fluctuations.append(math.sqrt(sum(residuals) / s))
+                if fluctuations:
+                    mean_f = sum(fluctuations) / len(fluctuations)
+                    if mean_f > 0:
+                        log_n.append(math.log(s))
+                        log_f.append(math.log(mean_f))
+
+            if len(log_n) >= 3:
+                nl = len(log_n)
+                mx = sum(log_n) / nl
+                my = sum(log_f) / nl
+                num = sum((x - mx) * (y - my) for x, y in zip(log_n, log_f))
+                den = sum((x - mx)**2 for x in log_n)
+                alpha1 = num / den if den > 0 else 0
+
+                result["dfa_alpha1"] = {
+                    "value": round(alpha1, 3),
+                    "window_size": len(window),
+                    "interpretation": (
+                        "Healthy fractal correlation (0.75–1.0)" if 0.75 <= alpha1 <= 1.0 else
+                        "Parasympathetic dominance (< 0.75)" if alpha1 < 0.75 else
+                        "Loss of fractal complexity (> 1.0) — sympathetic shift or reduced adaptability"
+                    ),
+                    "what": "Fractal scaling of heartbeat intervals. Healthy hearts show alpha1 ≈ 1.0. "
+                            "GAD typically shows values slightly above 1.0 (sympathetic rigidity).",
+                    "ref": "Peng CK et al. Chaos. 1995;5(1):82-87"
+                }
+
+    # ── HRV Triangular Index ──
+    if len(rr) >= 100:
+        bin_width = 8  # 7.8125ms bins (standard: 1/128s)
+        bins = {}
+        for v in rr:
+            b = int(v / bin_width)
+            bins[b] = bins.get(b, 0) + 1
+        peak_count = max(bins.values())
+        tri_index = len(rr) / peak_count
+
+        result["triangular_index"] = {
+            "value": round(tri_index, 1),
+            "interpretation": (
+                "Normal variability" if tri_index > 20 else
+                "Reduced variability" if tri_index > 10 else
+                "Low variability — limited autonomic flexibility"
+            ),
+            "what": "Total RR intervals divided by the height of the histogram peak. "
+                    "Higher = more spread = healthier. Robust to artifacts.",
+            "ref": "Task Force. Circulation. 1996;93(5):1043-1065"
+        }
+
+    return result
+
+
+def api_insights(conn):
+    """Research-driven HRV insights from all available data."""
+    insights = []
+
+    # sparkline data: hourly averages for each metric
+    sparklines = {}
+    for metric, col in [("rmssd", "rmssd"), ("sdnn", "sdnn"), ("hr", "hr_mean")]:
+        rows = conn.execute(f"""
+            SELECT AVG({col}) as v
+            FROM hrv_samples
+            WHERE {col} IS NOT NULL AND rmssd > 1 AND rmssd < 150
+            GROUP BY cast(ts / 3600 as int)
+            ORDER BY cast(ts / 3600 as int)
+        """).fetchall()
+        sparklines[metric] = [round(r["v"], 1) for r in rows if r["v"]]
+
+    # daily sparkline for trend
+    daily_rmssd = conn.execute("""
+        SELECT date(ts, 'unixepoch', 'localtime') as day, AVG(rmssd) as v
+        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150
+        GROUP BY day ORDER BY day
+    """).fetchall()
+    sparklines["daily_rmssd"] = [round(r["v"], 1) for r in daily_rmssd]
+
+    # per-session sparkline
+    session_rmssd = conn.execute("""
+        SELECT session_id, AVG(rmssd) as v
+        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150
+        GROUP BY session_id ORDER BY session_id
+    """).fetchall()
+    sparklines["session_rmssd"] = [round(r["v"], 1) for r in session_rmssd]
+
+    # stress events over time (hourly count)
+    stress_hourly = conn.execute("""
+        SELECT COUNT(*) as n FROM stress_events
+        GROUP BY cast(ts / 3600 as int) ORDER BY cast(ts / 3600 as int)
+    """).fetchall()
+    sparklines["stress"] = [r["n"] for r in stress_hourly]
+
+    # overall stats
+    stats = conn.execute("""
+        SELECT COUNT(*) as n, AVG(rmssd) as rmssd, AVG(sdnn) as sdnn, AVG(hr_mean) as hr,
+               MIN(rmssd) as rmssd_min, MAX(rmssd) as rmssd_max
+        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150
+    """).fetchone()
+
+    if not stats or stats["n"] < 10:
+        return {"insights": [{"type": "info", "title": "Not enough data",
+                              "body": "Need at least 10 HRV samples. Keep recording."}]}
+
+    avg_rmssd = stats["rmssd"]
+    avg_sdnn = stats["sdnn"]
+    avg_hr = stats["hr"]
+    total_n = stats["n"]
+
+    # 1. SDNN risk stratification (Kleiger et al., 1987; Task Force, 1996)
+    if avg_sdnn and avg_sdnn > 0:
+        if avg_sdnn < 50:
+            insights.append({
+                "type": "warning", "title": f"SDNN {avg_sdnn:.0f}ms — below clinical threshold",
+                "body": "SDNN < 50ms is associated with 5.3× increased cardiac mortality risk "
+                        "(Kleiger et al., 1987). This is the single strongest HRV predictor of health outcomes. "
+                        "Your biofeedback protocol should prioritize raising this number.",
+                "metric": "sdnn", "value": round(avg_sdnn, 1), "threshold": 50,
+                "ref": "Kleiger RE et al. Am J Cardiol. 1987;59(4):256-262"
+            })
+        elif avg_sdnn < 100:
+            insights.append({
+                "type": "info", "title": f"SDNN {avg_sdnn:.0f}ms — moderate range",
+                "body": "Normal 24h SDNN is 100–180ms. Your shorter recording periods will naturally show lower values. "
+                        "Track the trend over weeks — a rising SDNN means your autonomic flexibility is improving.",
+                "metric": "sdnn", "value": round(avg_sdnn, 1), "threshold": 100,
+                "ref": "Task Force of ESC/NASPE. Circulation. 1996;93(5):1043-1065"
+            })
+
+    # 2. RMSSD and parasympathetic tone (Shaffer & Ginsberg, 2017)
+    if avg_rmssd < 20:
+        insights.append({
+            "type": "warning", "title": f"RMSSD {avg_rmssd:.0f}ms — low parasympathetic tone",
+            "body": "RMSSD reflects vagal (parasympathetic) activity. Values below 20ms indicate "
+                    "reduced vagal modulation, common in GAD. Meta-analysis shows GAD reduces resting "
+                    "HRV by 15–30% vs healthy controls. Coherence breathing at resonant frequency "
+                    "(~6 breaths/min) is the most evidence-based intervention.",
+            "metric": "rmssd", "value": round(avg_rmssd, 1),
+            "ref": "Chalmers JA et al. Biol Psychol. 2014;98:12-26"
+        })
+    elif avg_rmssd < 35:
+        insights.append({
+            "type": "info", "title": f"RMSSD {avg_rmssd:.0f}ms — low-normal range",
+            "body": "Your RMSSD is in the lower normal range. For reference, healthy adults aged 30–40 "
+                    "average 27–45ms (Nunan et al., 2010). With consistent biofeedback practice, "
+                    "expect 10–20% improvement over 6–10 weeks.",
+            "metric": "rmssd", "value": round(avg_rmssd, 1),
+            "ref": "Nunan D et al. Scand J Med Sci Sports. 2010;20(4):e289-e300"
+        })
+
+    # 3. Resting HR and autonomic balance
+    if avg_hr and avg_hr > 80:
+        insights.append({
+            "type": "caution", "title": f"Resting HR {avg_hr:.0f} bpm — elevated",
+            "body": "Resting HR above 80 suggests sympathetic dominance. This correlates with your low RMSSD. "
+                    "As vagal tone improves through biofeedback, resting HR typically drops 3–8 bpm "
+                    "over 8–12 weeks (Lehrer et al., 2003).",
+            "metric": "hr", "value": round(avg_hr),
+            "ref": "Lehrer PM et al. Appl Psychophysiol Biofeedback. 2003;28(1):1-10"
+        })
+
+    # 4. Time-of-day analysis — morning vs evening
+    morning = conn.execute("""
+        SELECT AVG(rmssd) as rmssd, AVG(hr_mean) as hr, COUNT(*) as n
+        FROM hrv_samples
+        WHERE cast(strftime('%H', ts, 'unixepoch', 'localtime') as int) BETWEEN 6 AND 10
+          AND rmssd > 1 AND rmssd < 150
+    """).fetchone()
+    evening = conn.execute("""
+        SELECT AVG(rmssd) as rmssd, AVG(hr_mean) as hr, COUNT(*) as n
+        FROM hrv_samples
+        WHERE cast(strftime('%H', ts, 'unixepoch', 'localtime') as int) BETWEEN 20 AND 23
+          AND rmssd > 1 AND rmssd < 150
+    """).fetchone()
+
+    if morning["n"] > 5 and evening["n"] > 5 and morning["rmssd"] and evening["rmssd"]:
+        delta = morning["rmssd"] - evening["rmssd"]
+        pct = delta / evening["rmssd"] * 100 if evening["rmssd"] > 0 else 0
+        insights.append({
+            "type": "data", "title": f"Morning RMSSD {morning['rmssd']:.0f}ms vs evening {evening['rmssd']:.0f}ms",
+            "body": f"Your morning HRV is {abs(pct):.0f}% {'higher' if delta > 0 else 'lower'} than evening. "
+                    f"{'Morning elevation is normal — sleep restores vagal tone. ' if delta > 0 else 'Evening suppression is likely cannabis-related. '}"
+                    f"Morning readings are your cleanest baseline for tracking protocol effectiveness.",
+            "metric": "circadian", "morning": round(morning["rmssd"], 1), "evening": round(evening["rmssd"], 1)
+        })
+
+    # 5. Stress event analysis
+    stress = conn.execute("""
+        SELECT COUNT(*) as n, AVG(severity) as sev, AVG(duration_s) as dur, AVG(rmssd_at_event) as rmssd
+        FROM stress_events
+    """).fetchone()
+
+    if stress["n"] > 0:
+        events_per_hour = stress["n"] / max(1, total_n * 5 / 3600)  # ~5s per sample
+        insights.append({
+            "type": "data", "title": f"{stress['n']} stress events detected",
+            "body": f"Average severity {stress['sev']:.1f}/1.0, duration {stress['dur']:.0f}s, "
+                    f"RMSSD at event {stress['rmssd']:.0f}ms. "
+                    f"That's ~{events_per_hour:.1f} events/hour. "
+                    f"{'Frequent but mild — consistent with GAD pattern (chronic low-grade activation). ' if events_per_hour > 1 else ''}"
+                    f"Track whether event frequency decreases with practice — that's a key outcome measure.",
+            "metric": "stress", "count": stress["n"], "per_hour": round(events_per_hour, 1)
+        })
+
+    # 6. Overnight recovery capacity
+    overnight = conn.execute("""
+        SELECT AVG(rmssd) as rmssd, MAX(rmssd) as peak, AVG(hr_mean) as hr
+        FROM hrv_samples h
+        JOIN sessions s ON h.session_id = s.id
+        WHERE (julianday(s.ended_at) - julianday(s.started_at)) * 24 > 4
+          AND rmssd > 1 AND rmssd < 200
+    """).fetchone()
+
+    if overnight["rmssd"] and overnight["peak"]:
+        insights.append({
+            "type": "positive" if overnight["peak"] > 60 else "info",
+            "title": f"Overnight peak RMSSD: {overnight['peak']:.0f}ms",
+            "body": f"Your nervous system reached {overnight['peak']:.0f}ms during sleep "
+                    f"(avg {overnight['rmssd']:.0f}ms). "
+                    f"{'This shows strong vagal recovery capacity — your baseline suppression is situational, not structural. ' if overnight['peak'] > 60 else ''}"
+                    f"Overnight HRV is considered the most reliable measure of autonomic health "
+                    f"(Shaffer & Ginsberg, 2017).",
+            "metric": "overnight", "peak": round(overnight["peak"], 1), "avg": round(overnight["rmssd"], 1),
+            "ref": "Shaffer F & Ginsberg JP. Front Public Health. 2017;5:258"
+        })
+
+    # 7. Biofeedback protocol recommendations
+    practice_count = conn.execute("""
+        SELECT COUNT(DISTINCT date(started_at)) as days
+        FROM sessions
+        WHERE julianday(started_at) > julianday('now', '-14 days')
+    """).fetchone()["days"]
+
+    insights.append({
+        "type": "protocol", "title": f"Protocol adherence: {practice_count} days in last 14",
+        "body": f"Research shows optimal HRV biofeedback requires 4–5 sessions/week, 15–20 min each "
+                f"(Lehrer & Gevirtz, 2014). Most studies see significant results at week 4–6. "
+                f"{'You\'re on track — maintain this frequency.' if practice_count >= 8 else 'Try to increase to at least 4 sessions per week.'} "
+                f"Morning baseline measurement (5 min resting, before substances) is essential for tracking progress.",
+        "metric": "adherence", "days_active": practice_count,
+        "ref": "Lehrer PM & Gevirtz R. Biofeedback. 2014;42(1):26-31"
+    })
+
+    return {
+        "insights": insights,
+        "summary": {
+            "rmssd_avg": round(avg_rmssd, 1),
+            "sdnn_avg": round(avg_sdnn, 1) if avg_sdnn else None,
+            "hr_avg": round(avg_hr) if avg_hr else None,
+            "total_samples": total_n,
+            "total_hours": round(total_n * 5 / 3600, 1),
+        },
+        "sparklines": sparklines,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = DB_PATH
 
@@ -261,6 +691,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(api_sessions(conn, limit, offset))
             elif path == "/api/trend":
                 self._json(api_trend_signal(conn))
+            elif path == "/api/analytics":
+                self._json(api_analytics(conn))
+            elif path == "/api/insights":
+                self._json(api_insights(conn))
             elif path == "/api/tags":
                 date_filter = params.get("date", [None])[0]
                 tags = load_tags()
