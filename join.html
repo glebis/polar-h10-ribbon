@@ -121,7 +121,8 @@
 <canvas id="cam-canvas" width="160" height="120" style="display:none"></canvas>
 
 <script>
-  const RELAY_URL = `ws://${location.hostname}:9000`;
+  // relay on same host as the page, port 9000
+  const RELAY_URL = `ws://${location.hostname}:9000`; // works over Tailscale automatically
   let ws = null;
   let myName = '';
   let inputMode = '';
