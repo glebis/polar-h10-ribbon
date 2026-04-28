@@ -235,123 +235,153 @@ def api_trend_signal(conn):
 
 
 def api_analytics(conn):
-    """Deep statistical analysis of HRV data — computed server-side."""
+    """Deep statistical analysis — uses hrv_metrics module, partitions by session.
+
+    All metrics computed from cleaned NN intervals per session, then aggregated.
+    Never computes across session boundaries.
+    """
+    import hrv_metrics as hm
     result = {}
 
-    # ── pNN50: % of successive RR diffs > 50ms ──
-    rr_rows = conn.execute("""
-        SELECT rr_ms FROM rr_intervals
-        WHERE rr_ms > 200 AND rr_ms < 2000
-        ORDER BY ts
+    # Load RR intervals PER SESSION (never cross session boundaries)
+    sessions = conn.execute("""
+        SELECT DISTINCT session_id FROM rr_intervals ORDER BY session_id
     """).fetchall()
-    rr = [r["rr_ms"] for r in rr_rows]
 
-    if len(rr) > 10:
-        diffs = [abs(rr[i+1] - rr[i]) for i in range(len(rr)-1)]
-        pnn50 = sum(1 for d in diffs if d > 50) / len(diffs) * 100
-        pnn20 = sum(1 for d in diffs if d > 20) / len(diffs) * 100
-        mean_rr = sum(rr) / len(rr)
-        result["pnn50"] = {
-            "value": round(pnn50, 1),
-            "pnn20": round(pnn20, 1),
-            "n": len(rr),
-            "interpretation": (
-                "High parasympathetic activity" if pnn50 > 20 else
-                "Normal vagal modulation" if pnn50 > 5 else
-                "Low vagal modulation — consistent with anxiety"
-            ),
-            "ref": "Bigger JT et al. Am J Cardiol. 1992;69(11):891-898"
-        }
+    all_metrics = []
+    all_nn = []
+    best_session = None
+    best_rmssd = 0
 
-    # ── Poincaré SD1/SD2 from stored RMSSD and SDNN ──
-    hrv_stats = conn.execute("""
-        SELECT AVG(rmssd) as rmssd, AVG(sdnn) as sdnn
-        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150 AND sdnn > 1
-    """).fetchone()
+    for row in sessions:
+        sid = row["session_id"]
+        rr_rows = conn.execute(
+            "SELECT rr_ms FROM rr_intervals WHERE session_id = ? ORDER BY ts",
+            (sid,)
+        ).fetchall()
+        rr = [r["rr_ms"] for r in rr_rows]
+        if len(rr) < 30:
+            continue
 
-    if hrv_stats["rmssd"] and hrv_stats["sdnn"]:
-        rmssd_val = hrv_stats["rmssd"]
-        sdnn_val = hrv_stats["sdnn"]
-        sd1 = rmssd_val / math.sqrt(2)
-        sd2_sq = 2 * sdnn_val**2 - 0.5 * rmssd_val**2
-        sd2 = math.sqrt(max(0, sd2_sq))
-        ratio = sd1 / sd2 if sd2 > 0 else 0
+        nn = hm.clean_rr(rr)
+        if len(nn) < 20:
+            continue
 
+        metrics = hm.compute_all(nn)
+        metrics["session_id"] = sid
+        all_metrics.append(metrics)
+        all_nn.extend(nn)
+
+        if metrics["rmssd"] and metrics["rmssd"] > best_rmssd:
+            best_rmssd = metrics["rmssd"]
+            best_session = metrics
+
+    if not all_metrics:
+        return {"error": "insufficient data"}
+
+    # Aggregate: weighted average by sample count
+    def wavg(key):
+        vals = [(m[key], m["n"]) for m in all_metrics if m.get(key) is not None]
+        if not vals:
+            return None
+        total_n = sum(n for _, n in vals)
+        return round(sum(v * n for v, n in vals) / total_n, 1) if total_n > 0 else None
+
+    # Per-session sparklines
+    result["session_rmssd"] = [m["rmssd"] for m in all_metrics if m.get("rmssd")]
+    result["session_sd1"] = [m["poincare"]["sd1"] for m in all_metrics if m.get("poincare")]
+
+    # Aggregated metrics (weighted by session length)
+    result["pnn50"] = {
+        "value": wavg("pnn50"),
+        "pnn20": wavg("pnn20"),
+        "n": sum(m["n"] for m in all_metrics),
+        "sessions": len(all_metrics),
+        "interpretation": (
+            "High parasympathetic activity" if (wavg("pnn50") or 0) > 20 else
+            "Normal vagal modulation" if (wavg("pnn50") or 0) > 5 else
+            "Low vagal modulation — may reflect anxiety or deconditioning"
+        ),
+        "note": "Computed per-session with artifact correction, then averaged.",
+        "ref": "Bigger JT et al. Am J Cardiol. 1992;69(11):891-898"
+    }
+
+    # Poincaré from best (longest clean) session — not averaged
+    if best_session and best_session.get("poincare"):
+        p = best_session["poincare"]
         result["poincare"] = {
-            "sd1": round(sd1, 1),
-            "sd2": round(sd2, 1),
-            "ratio": round(ratio, 3),
+            **p,
             "interpretation": (
-                "Vagal dominant (ratio > 0.5)" if ratio > 0.5 else
-                "Sympathetic shift (ratio < 0.3)" if ratio < 0.3 else
+                "Vagal dominant (ratio > 0.5)" if p["ratio"] > 0.5 else
+                "Sympathetic shift (ratio < 0.3)" if p["ratio"] < 0.3 else
                 "Balanced autonomic modulation"
             ),
-            "what": "SD1 = short-term vagal variability, SD2 = longer-term. Ratio tracks autonomic balance.",
+            "what": "SD1 = short-term vagal variability, SD2 = longer-term. Computed from cleaned NN intervals of best session.",
             "ref": "Brennan M et al. IEEE Trans Biomed Eng. 2001;48(11):1342-1347"
         }
 
-    # ── RMSSD/SDNN ratio ──
-    if hrv_stats["rmssd"] and hrv_stats["sdnn"] and hrv_stats["sdnn"] > 0:
-        ratio = hrv_stats["rmssd"] / hrv_stats["sdnn"]
+    # RMSSD/SDNN ratio
+    r = wavg("rmssd_sdnn_ratio")
+    if r:
         result["rmssd_sdnn_ratio"] = {
-            "value": round(ratio, 3),
+            "value": r,
             "interpretation": (
-                "Vagal dominant" if ratio > 0.5 else
-                "Mixed autonomic" if ratio > 0.3 else
+                "Vagal dominant" if r > 0.5 else
+                "Mixed autonomic" if r > 0.3 else
                 "Sympathetic dominant"
             ),
-            "what": "Values > 0.5 suggest parasympathetic predominance. Lower values = more sympathetic input."
+            "what": "Values > 0.5 suggest parasympathetic predominance."
         }
 
-    # ── Per-session Poincaré SD1 sparkline ──
-    session_sd1 = []
-    for row in conn.execute("""
-        SELECT session_id, AVG(rmssd) as rmssd
-        FROM hrv_samples WHERE rmssd > 1 AND rmssd < 150
-        GROUP BY session_id ORDER BY session_id
-    """).fetchall():
-        session_sd1.append(round(row["rmssd"] / math.sqrt(2), 1))
-    result["session_sd1"] = session_sd1
+    # Sample entropy — from longest session with ≥200 beats
+    long_sessions = [m for m in all_metrics if m.get("sample_entropy") is not None]
+    if long_sessions:
+        se = max(long_sessions, key=lambda m: m["n"])
+        result["sample_entropy"] = {
+            "value": se["sample_entropy"],
+            "window_size": se["n"],
+            "interpretation": (
+                "High complexity — healthy autonomic flexibility" if se["sample_entropy"] > 1.5 else
+                "Moderate complexity" if se["sample_entropy"] > 1.0 else
+                "Low complexity — reduced autonomic adaptability"
+            ),
+            "what": "Measures unpredictability of NN intervals. Higher = more complex = healthier. "
+                    "Computed from artifact-corrected NN intervals of longest session.",
+            "ref": "Richman JS & Moorman JR. Am J Physiol. 2000;278(6):H2039-H2049"
+        }
 
-    # ── Sample Entropy (approximation from RR intervals, last 1000 beats) ──
-    if len(rr) >= 200:
-        window = rr[-min(1000, len(rr)):]
-        m = 2
-        r_tol = 0.2 * (sum((x - sum(window)/len(window))**2 for x in window) / len(window)) ** 0.5
+    # DFA alpha1 — from longest session with ≥64 beats
+    dfa_sessions = [m for m in all_metrics if m.get("dfa_alpha1") is not None]
+    if dfa_sessions:
+        dfa = max(dfa_sessions, key=lambda m: m["n"])
+        result["dfa_alpha1"] = {
+            "value": dfa["dfa_alpha1"],
+            "window_size": dfa["n"],
+            "interpretation": (
+                "Healthy fractal correlation (0.75–1.0)" if 0.75 <= dfa["dfa_alpha1"] <= 1.0 else
+                "Parasympathetic dominance (< 0.75)" if dfa["dfa_alpha1"] < 0.75 else
+                "Loss of fractal complexity (> 1.0) — may reflect sympathetic rigidity"
+            ),
+            "what": "Fractal scaling of heartbeat intervals. Computed from cleaned NN intervals, scales 4-16.",
+            "ref": "Peng CK et al. Chaos. 1995;5(1):82-87"
+        }
 
-        def count_matches(data, template_len, tol):
-            n = len(data) - template_len
-            count = 0
-            for i in range(n):
-                for j in range(i+1, n):
-                    match = True
-                    for k in range(template_len):
-                        if abs(data[i+k] - data[j+k]) > tol:
-                            match = False
-                            break
-                    if match:
-                        count += 1
-            return count
+    # Triangular index
+    ti = wavg("triangular_index")
+    if ti:
+        result["triangular_index"] = {
+            "value": ti,
+            "interpretation": (
+                "Normal variability" if ti > 20 else
+                "Reduced variability" if ti > 10 else
+                "Low variability"
+            ),
+            "what": "Total NN / max histogram bin. Robust to artifacts. "
+                    "Note: clinical thresholds are for 24h recordings; short-term values will be lower.",
+            "ref": "Task Force. Circulation. 1996;93(5):1043-1065"
+        }
 
-        b = count_matches(window, m, r_tol)
-        a = count_matches(window, m+1, r_tol)
-
-        if b > 0 and a > 0:
-            sampen = -math.log(a / b)
-            result["sample_entropy"] = {
-                "value": round(sampen, 3),
-                "window_size": len(window),
-                "interpretation": (
-                    "High complexity — healthy autonomic flexibility" if sampen > 1.5 else
-                    "Moderate complexity" if sampen > 1.0 else
-                    "Low complexity — reduced autonomic adaptability"
-                ),
-                "what": "Measures unpredictability of RR intervals. Higher = more complex = healthier. "
-                        "Anxiety and aging both reduce sample entropy.",
-                "ref": "Richman JS & Moorman JR. Am J Physiol. 2000;278(6):H2039-H2049"
-            }
-
-    # ── Stress-recovery analysis ──
+    # Stress-recovery from stress_events table
     stress_stats = conn.execute("""
         SELECT COUNT(*) as n, SUM(duration_s) as total_stress_s,
                AVG(severity) as avg_sev, AVG(rmssd_at_event) as avg_rmssd
@@ -365,10 +395,9 @@ def api_analytics(conn):
 
     if stress_stats["n"] > 0 and stress_stats["total_stress_s"]:
         stress_pct = stress_stats["total_stress_s"] / total_recording_s * 100
-        recovery_pct = 100 - stress_pct
         result["stress_recovery"] = {
             "stress_pct": round(stress_pct, 1),
-            "recovery_pct": round(recovery_pct, 1),
+            "recovery_pct": round(100 - stress_pct, 1),
             "total_stress_min": round(stress_stats["total_stress_s"] / 60, 1),
             "total_recording_min": round(total_recording_s / 60, 1),
             "avg_event_duration_s": round(stress_stats["total_stress_s"] / stress_stats["n"]),
@@ -379,87 +408,8 @@ def api_analytics(conn):
             )
         }
 
-    # ── DFA alpha1 (detrended fluctuation analysis) ──
-    if len(rr) >= 500:
-        window = rr[-min(2000, len(rr)):]
-        n = len(window)
-        mean_rr = sum(window) / n
-        integrated = []
-        cumsum = 0
-        for v in window:
-            cumsum += (v - mean_rr)
-            integrated.append(cumsum)
-
-        scales = [s for s in [4, 6, 8, 12, 16, 24, 32, 48, 64] if s <= n // 4]
-        if len(scales) >= 4:
-            log_n = []
-            log_f = []
-            for s in scales:
-                num_segments = n // s
-                fluctuations = []
-                for seg in range(num_segments):
-                    start = seg * s
-                    segment = integrated[start:start+s]
-                    # linear detrend
-                    xs = list(range(s))
-                    mx = (s - 1) / 2
-                    my = sum(segment) / s
-                    num = sum((x - mx) * (y - my) for x, y in zip(xs, segment))
-                    den = sum((x - mx)**2 for x in xs)
-                    slope = num / den if den > 0 else 0
-                    intercept = my - slope * mx
-                    residuals = [(segment[i] - (slope * i + intercept))**2 for i in range(s)]
-                    fluctuations.append(math.sqrt(sum(residuals) / s))
-                if fluctuations:
-                    mean_f = sum(fluctuations) / len(fluctuations)
-                    if mean_f > 0:
-                        log_n.append(math.log(s))
-                        log_f.append(math.log(mean_f))
-
-            if len(log_n) >= 3:
-                nl = len(log_n)
-                mx = sum(log_n) / nl
-                my = sum(log_f) / nl
-                num = sum((x - mx) * (y - my) for x, y in zip(log_n, log_f))
-                den = sum((x - mx)**2 for x in log_n)
-                alpha1 = num / den if den > 0 else 0
-
-                result["dfa_alpha1"] = {
-                    "value": round(alpha1, 3),
-                    "window_size": len(window),
-                    "interpretation": (
-                        "Healthy fractal correlation (0.75–1.0)" if 0.75 <= alpha1 <= 1.0 else
-                        "Parasympathetic dominance (< 0.75)" if alpha1 < 0.75 else
-                        "Loss of fractal complexity (> 1.0) — sympathetic shift or reduced adaptability"
-                    ),
-                    "what": "Fractal scaling of heartbeat intervals. Healthy hearts show alpha1 ≈ 1.0. "
-                            "GAD typically shows values slightly above 1.0 (sympathetic rigidity).",
-                    "ref": "Peng CK et al. Chaos. 1995;5(1):82-87"
-                }
-
-    # ── HRV Triangular Index ──
-    if len(rr) >= 100:
-        bin_width = 8  # 7.8125ms bins (standard: 1/128s)
-        bins = {}
-        for v in rr:
-            b = int(v / bin_width)
-            bins[b] = bins.get(b, 0) + 1
-        peak_count = max(bins.values())
-        tri_index = len(rr) / peak_count
-
-        result["triangular_index"] = {
-            "value": round(tri_index, 1),
-            "interpretation": (
-                "Normal variability" if tri_index > 20 else
-                "Reduced variability" if tri_index > 10 else
-                "Low variability — limited autonomic flexibility"
-            ),
-            "what": "Total RR intervals divided by the height of the histogram peak. "
-                    "Higher = more spread = healthier. Robust to artifacts.",
-            "ref": "Task Force. Circulation. 1996;93(5):1043-1065"
-        }
-
     return result
+
 
 
 def api_insights(conn):
