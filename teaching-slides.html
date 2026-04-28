@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teaching as Medicine</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  @font-face { font-family:'Monaspace Argon'; src:url('https://cdn.jsdelivr.net/gh/githubnext/monaspace@v1.101/fonts/webfonts/MonaspaceArgon-Regular.woff2') format('woff2'); font-weight:400; font-display:swap; }
+  @font-face { font-family:'Monaspace Argon'; src:url('https://cdn.jsdelivr.net/gh/githubnext/monaspace@v1.101/fonts/webfonts/MonaspaceArgon-Bold.woff2') format('woff2'); font-weight:700; font-display:swap; }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-snap-type:y mandatory; scroll-behavior:smooth; }
+  body { font-family:'EB Garamond',Georgia,serif; background:#070709; color:#d8d8d0; }
+
+  .slide { min-height:100vh; scroll-snap-align:start; display:flex; align-items:center;
+           justify-content:center; padding:60px 40px; position:relative; overflow:hidden; }
+  .slide-inner { max-width:900px; width:100%; }
+
+  h1 { font-size:4rem; font-weight:400; line-height:1.1; color:#fff; letter-spacing:-0.02em; }
+  h2 { font-size:2.8rem; font-weight:400; line-height:1.15; color:#fff; margin-bottom:24px; }
+  .subtitle { font-size:1.3rem; color:#888; font-style:italic; margin-top:12px; }
+  .author { font-family:'Monaspace Argon',monospace; font-size:0.75rem; color:#555; margin-top:24px; letter-spacing:0.1em; }
+
+  .big-num { font-family:'Monaspace Argon',monospace; font-size:5rem; font-weight:700; line-height:1; }
+  .big-unit { font-family:'Monaspace Argon',monospace; font-size:1.5rem; color:#888; }
+  .stat-row { display:flex; gap:40px; margin:32px 0; flex-wrap:wrap; }
+  .stat { text-align:center; }
+  .stat .val { font-family:'Monaspace Argon',monospace; font-size:2.2rem; font-weight:700; color:#fff; }
+  .stat .lbl { font-size:0.85rem; color:#666; margin-top:4px; }
+
+  .compare-bar { display:flex; align-items:center; gap:12px; margin:10px 0; }
+  .bar-fill { height:28px; border-radius:3px; display:flex; align-items:center; padding-left:10px;
+              font-family:'Monaspace Argon',monospace; font-size:0.8rem; color:#fff; min-width:40px; }
+  .bar-label { font-size:0.9rem; color:#999; min-width:140px; text-align:right; }
+
+  .quote { font-size:1.8rem; font-style:italic; line-height:1.5; color:#fff; max-width:700px; }
+  .quote-src { font-size:0.85rem; color:#555; margin-top:16px; }
+
+  .insight-box { background:#0e0e14; border-left:3px solid #c45a28; padding:20px 24px;
+                 border-radius:0 6px 6px 0; margin:20px 0; }
+  .insight-box p { font-size:1rem; color:#aaa; line-height:1.6; margin-bottom:8px; }
+  .insight-box strong { color:#fff; }
+
+  .vs { display:grid; grid-template-columns:1fr auto 1fr; gap:24px; align-items:center; margin:32px 0; }
+  .vs-side { text-align:center; }
+  .vs-arrow { font-size:2rem; color:#333; }
+
+  .cta { font-size:1.3rem; color:#c45a28; font-style:italic; margin-top:32px; }
+
+  .tag { display:inline-block; font-family:'Monaspace Argon',monospace; font-size:0.65rem;
+         background:#1a1a22; color:#666; padding:3px 10px; border-radius:3px; margin:2px; }
+
+  .pulse { animation: pulse-glow 2s ease-in-out infinite; }
+  @keyframes pulse-glow { 0%,100% { opacity:0.6; } 50% { opacity:1; } }
+
+  /* nav dots */
+  .nav { position:fixed; right:20px; top:50%; transform:translateY(-50%); z-index:100; }
+  .nav-dot { width:8px; height:8px; border-radius:50%; background:#333; margin:8px 0; cursor:pointer;
+             transition:all 0.3s; }
+  .nav-dot.active { background:#c45a28; transform:scale(1.5); }
+
+  .slide-num { position:absolute; bottom:20px; right:24px; font-family:'Monaspace Argon',monospace;
+               font-size:0.65rem; color:#333; }
+
+  .heart { display:inline-block; color:#c45a28; }
+  .heart.pulse { animation: heartbeat 1s ease-in-out infinite; }
+  @keyframes heartbeat { 0%,100% { transform:scale(1); } 15% { transform:scale(1.15); } 30% { transform:scale(1); } 45% { transform:scale(1.1); } }
+</style>
+</head>
+<body>
+
+<div class="nav" id="nav"></div>
+
+<!-- Slide 1: Title -->
+<div class="slide" id="s1">
+  <div class="slide-inner" style="text-align:center">
+    <div style="font-size:3rem;margin-bottom:20px"><span class="heart pulse">♥</span></div>
+    <h1>Teaching as Medicine</h1>
+    <p class="subtitle">What my heart told me about flow, anxiety, and purpose</p>
+    <p class="author">GLEB KALININ · APRIL 2026</p>
+    <div style="margin-top:32px">
+      <span class="tag">HRV biofeedback</span>
+      <span class="tag">Polar H10</span>
+      <span class="tag">n=1 research</span>
+      <span class="tag">flow state</span>
+    </div>
+  </div>
+  <div class="slide-num">1/7</div>
+</div>
+
+<!-- Slide 2: The Data -->
+<div class="slide" id="s2" style="background:#0a0a0f">
+  <div class="slide-inner">
+    <h2>I wore a heart monitor for 48 hours.</h2>
+    <p style="font-size:1.15rem;color:#888;margin-bottom:32px">A Polar H10 chest strap measuring every single heartbeat — ECG-grade precision, beat-by-beat resolution. Not a wrist sensor. Not an estimate.</p>
+    <div class="stat-row">
+      <div class="stat"><div class="val" style="color:#4aafff">71,295</div><div class="lbl">heartbeats recorded</div></div>
+      <div class="stat"><div class="val">25</div><div class="lbl">sessions</div></div>
+      <div class="stat"><div class="val">20.6</div><div class="lbl">hours of data</div></div>
+      <div class="stat"><div class="val">9,731</div><div class="lbl">HRV samples</div></div>
+    </div>
+    <p style="font-size:1rem;color:#666;margin-top:24px">I built a real-time biofeedback system that turns HRV data into ambient lighting, generative music, and clinical analytics. Then I looked at what the data actually said.</p>
+  </div>
+  <div class="slide-num">2/7</div>
+</div>
+
+<!-- Slide 3: The Surprise -->
+<div class="slide" id="s3">
+  <div class="slide-inner">
+    <p style="font-size:1rem;color:#666;margin-bottom:12px;text-transform:uppercase;letter-spacing:0.1em">the surprise</p>
+    <h2 style="font-size:2.4rem">During a 90-minute teaching session, my nervous system hit its calmest state ever recorded.</h2>
+
+    <div class="vs">
+      <div class="vs-side">
+        <div class="big-num" style="color:#888">29</div>
+        <div class="big-unit">ms RMSSD</div>
+        <p style="color:#555;margin-top:8px">resting baseline</p>
+      </div>
+      <div class="vs-arrow">→</div>
+      <div class="vs-side">
+        <div class="big-num" style="color:#4aafff">69</div>
+        <div class="big-unit">ms RMSSD</div>
+        <p style="color:#4aafff;margin-top:8px">while teaching</p>
+      </div>
+    </div>
+
+    <div class="insight-box">
+      <p><strong>2.3× my resting baseline.</strong> Heart rate dropped to 59 bpm — the lowest sustained rate I've ever recorded. I was speaking 92% of the time (15,730 words). This wasn't relaxation. This was deep engagement.</p>
+    </div>
+  </div>
+  <div class="slide-num">3/7</div>
+</div>
+
+<!-- Slide 4: The Comparison -->
+<div class="slide" id="s4" style="background:#0a0a0f">
+  <div class="slide-inner">
+    <h2 style="font-size:2rem">Teaching beat every deliberate health practice.</h2>
+    <p style="color:#666;margin-bottom:24px">RMSSD = heart rate variability. Higher = calmer nervous system.</p>
+
+    <div class="compare-bar">
+      <div class="bar-label">Teaching (flow)</div>
+      <div class="bar-fill" style="width:52%;background:rgba(74,170,255,0.7)">65 ms</div>
+    </div>
+    <div class="compare-bar">
+      <div class="bar-label">Exercise + breathing</div>
+      <div class="bar-fill" style="width:35%;background:rgba(42,122,90,0.6)">44 ms</div>
+    </div>
+    <div class="compare-bar">
+      <div class="bar-label">Post-exercise rebound</div>
+      <div class="bar-fill" style="width:32%;background:rgba(42,122,90,0.5)">40 ms</div>
+    </div>
+    <div class="compare-bar">
+      <div class="bar-label">Coherence breathing</div>
+      <div class="bar-fill" style="width:30%;background:rgba(200,144,0,0.5)">38 ms</div>
+    </div>
+    <div class="compare-bar">
+      <div class="bar-label">Resting baseline</div>
+      <div class="bar-fill" style="width:23%;background:rgba(150,150,150,0.3)">29 ms</div>
+    </div>
+    <div class="compare-bar">
+      <div class="bar-label" style="color:#a55">Post-cannabis</div>
+      <div class="bar-fill" style="width:6%;background:rgba(160,85,85,0.5)">7 ms</div>
+    </div>
+
+    <p style="font-size:0.9rem;color:#555;margin-top:20px">Cold showers, breathing exercises, meditation — all good. None came close to what happened when I was absorbed in teaching.</p>
+  </div>
+  <div class="slide-num">4/7</div>
+</div>
+
+<!-- Slide 5: The Insight -->
+<div class="slide" id="s5">
+  <div class="slide-inner" style="text-align:center">
+    <div class="quote">
+      "My anxiety doesn't live in my nervous system.<br>
+      It lives in the gaps between purpose."
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:40px;text-align:left">
+      <div class="insight-box" style="border-color:#a55">
+        <p style="font-size:0.9rem"><strong style="color:#e06a7a">Idle time</strong><br>Sympathetic dominance. Rumination. HRV crashes to 7–15ms. The nervous system spins without load.</p>
+      </div>
+      <div class="insight-box" style="border-color:#4aafff">
+        <p style="font-size:0.9rem"><strong style="color:#4aafff">Deep engagement</strong><br>Parasympathetic activation. Flow state. HRV rises to 61–69ms. The nervous system found its purpose.</p>
+      </div>
+    </div>
+
+    <p style="font-size:1.1rem;color:#888;margin-top:32px;font-style:italic">The nervous system isn't broken. It's waiting for purpose.</p>
+  </div>
+  <div class="slide-num">5/7</div>
+</div>
+
+<!-- Slide 6: The Science -->
+<div class="slide" id="s6" style="background:#0a0a0f">
+  <div class="slide-inner">
+    <h2 style="font-size:2rem">Why does this work?</h2>
+
+    <div class="insight-box" style="border-color:#2a7a5a;margin-bottom:16px">
+      <p><strong>Flow state suppresses the Default Mode Network</strong> — the brain network responsible for self-referential thinking, rumination, and worry. When you're fully absorbed in teaching, the DMN quiets. Anxiety requires self-focus; flow eliminates it.</p>
+    </div>
+
+    <div class="insight-box" style="border-color:#4aafff;margin-bottom:16px">
+      <p><strong>Polyvagal theory</strong> (Porges, 1994): Teaching activates the ventral vagal circuit — the social engagement system. Voice modulation, eye contact, reading the room — all vagal. This is the only autonomic circuit compatible with calm, connection, and learning.</p>
+    </div>
+
+    <div class="insight-box" style="border-color:#c89000">
+      <p><strong>Csikszentmihalyi's flow</strong>: When challenge matches skill, anxiety (too much challenge) and boredom (too little) both disappear. The HRV data confirms this physiologically — the autonomic nervous system enters its optimal state exactly when the psychological conditions for flow are met.</p>
+      <p class="quote-src">Peifer (2012): flow correlates with increased vagal tone and decreased cortisol.</p>
+    </div>
+  </div>
+  <div class="slide-num">6/7</div>
+</div>
+
+<!-- Slide 7: The Takeaway -->
+<div class="slide" id="s7">
+  <div class="slide-inner" style="text-align:center">
+    <div style="font-size:3rem;margin-bottom:24px"><span class="heart pulse">♥</span></div>
+    <div class="quote" style="font-size:1.6rem;max-width:650px;margin:0 auto">
+      The best anxiety intervention might not be a pill, a breathing exercise, or a cold shower.<br><br>
+      It might be doing something that matters so deeply you forget yourself.
+    </div>
+
+    <p class="cta" style="margin-top:40px">What puts you in flow?<br>That might be your medicine too.</p>
+
+    <div style="margin-top:40px">
+      <span class="tag">Built with Claude Code + Polar H10</span>
+      <span class="tag">github.com/glebis/polar-h10-ribbon</span>
+    </div>
+
+    <p class="author" style="margin-top:24px">GLEB KALININ · glebkalinin.com</p>
+  </div>
+  <div class="slide-num">7/7</div>
+</div>
+
+<script>
+  // Navigation dots
+  const slides = document.querySelectorAll('.slide');
+  const nav = document.getElementById('nav');
+  slides.forEach((s, i) => {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.onclick = () => s.scrollIntoView({ behavior: 'smooth' });
+    nav.appendChild(dot);
+  });
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const idx = [...slides].indexOf(e.target);
+        document.querySelectorAll('.nav-dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+      }
+    });
+  }, { threshold: 0.5 });
+  slides.forEach(s => observer.observe(s));
+
+  // Keyboard
+  document.addEventListener('keydown', e => {
+    const current = [...slides].findIndex(s => s.getBoundingClientRect().top >= -100);
+    if (e.key === 'ArrowDown' || e.key === ' ') {
+      e.preventDefault();
+      const next = Math.min(slides.length - 1, current + 1);
+      slides[next].scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(0, current - 1);
+      slides[prev].scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+</script>
+</body>
+</html>
