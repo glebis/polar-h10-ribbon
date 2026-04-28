@@ -198,6 +198,8 @@ export function navHTML(current) {
     ['pacer.html', 'pacer'],
     ['wave-match.html', 'wave'],
     ['coherence.html', 'coherence'],
+    ['hrv-dashboard.html', 'hrv-lights'],
+    ['protocol.html', 'protocol'],
   ];
   return items
     .map(([h, n]) => n === current

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HRV → Lights dashboard</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; overflow: hidden; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9a9a9a; }
+
+    #nav { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); font-size: 11px;
+           opacity: 0.45; user-select: none; }
+    #nav a { color: inherit; text-decoration: none; margin: 0 8px; }
+    #nav a:hover { opacity: 1; color: #fff; }
+
+    .metrics { position: fixed; top: 50px; left: 20px; right: 20px;
+               display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+    .m { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 6px; padding: 14px 16px; }
+    .m .val { font-size: 28px; color: #fff; font-variant-numeric: tabular-nums; line-height: 1.2; }
+    .m .lbl { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+    .m .sub { font-size: 11px; color: #666; margin-top: 2px; }
+
+    .swatch { width: 48px; height: 48px; border-radius: 50%; display: inline-block;
+              box-shadow: 0 0 30px var(--glow, #333); transition: all 0.5s; }
+
+    #presets { position: fixed; top: 145px; left: 20px; right: 20px; font-size: 11px;
+               display: flex; gap: 8px; }
+    #presets button { background: #151518; border: 1px solid #2a2a33; color: #888;
+                      padding: 4px 12px; border-radius: 3px; cursor: pointer; font: inherit; }
+    #presets button:hover { border-color: #555; color: #ccc; }
+    #presets button.active { border-color: #e6b26c; color: #e6b26c; }
+    #chart-wrap { position: fixed; top: 180px; left: 20px; right: 20px; bottom: 60px; }
+    canvas { width: 100%; height: 100%; }
+
+    #status { position: fixed; bottom: 14px; left: 20px; font-size: 11px; opacity: 0.4; }
+    #session { position: fixed; bottom: 14px; right: 20px; font-size: 11px; opacity: 0.35; }
+
+    .trend-up { color: #4a8; }
+    .trend-down { color: #e64; }
+    .trend-flat { color: #888; }
+  </style>
+</head>
+<body>
+  <div id="nav">
+    <a href="index.html">ribbon</a>
+    <a href="pacer.html">pacer</a>
+    <a href="wave-match.html">wave</a>
+    <a href="coherence.html">coherence</a>
+    <span style="color:#fff;opacity:0.9;margin:0 8px">hrv-lights</span>
+  </div>
+
+  <div class="metrics">
+    <div class="m">
+      <div class="val" id="vRmssd">—</div>
+      <div class="lbl">RMSSD ms</div>
+      <div class="sub" id="vBaseline">baseline —</div>
+    </div>
+    <div class="m">
+      <div class="val" id="vTrend">—</div>
+      <div class="lbl">trend ms/s</div>
+      <div class="sub" id="vTrendWord"></div>
+    </div>
+    <div class="m">
+      <div class="val" id="vDrop">—</div>
+      <div class="lbl">drop</div>
+      <div class="sub">intensity</div>
+    </div>
+    <div class="m">
+      <div class="val" id="vHR">—</div>
+      <div class="lbl">heart rate</div>
+      <div class="sub">bpm</div>
+    </div>
+    <div class="m">
+      <div class="val" id="vPulse">—</div>
+      <div class="lbl">light pulse</div>
+      <div class="sub">bpm</div>
+    </div>
+    <div class="m">
+      <div class="val" id="vMove">—</div>
+      <div class="lbl">movement</div>
+      <div class="sub" id="vMoveBar" style="font-size:14px;letter-spacing:1px"></div>
+    </div>
+    <div class="m" style="text-align:center;display:flex;align-items:center;justify-content:center;gap:12px">
+      <div class="swatch" id="swatch"></div>
+      <div>
+        <div class="val" id="vHex" style="font-size:14px">—</div>
+        <div class="lbl">color</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="presets"></div>
+  <div id="chart-wrap">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div id="status">connecting…</div>
+  <div id="session"></div>
+
+  <script>
+    const canvas = document.getElementById('chart');
+    const ctx = canvas.getContext('2d');
+    let data = [];        // {ts, rmssd, baseline, hex, hr, drop}
+    let sessionStart = 0;
+
+    function resize() {
+      canvas.width = canvas.clientWidth * devicePixelRatio;
+      canvas.height = canvas.clientHeight * devicePixelRatio;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function draw() {
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      if (data.length < 2) return;
+
+      const pad = { l: 55, r: 20, t: 20, b: 30 };
+      const cw = W - pad.l - pad.r;
+      const ch = H - pad.t - pad.b;
+
+      const maxV = Math.max(50, ...data.map(d => d.rmssd)) * 1.15;
+      const minT = data[0].ts;
+      const maxT = data[data.length - 1].ts;
+      const rangeT = Math.max(1, maxT - minT);
+
+      const x = (ts) => pad.l + ((ts - minT) / rangeT) * cw;
+      const y = (v) => pad.t + (1 - v / maxV) * ch;
+
+      // y grid
+      ctx.strokeStyle = '#1a1a22';
+      ctx.lineWidth = 1;
+      const font = `${10 * devicePixelRatio}px monospace`;
+      ctx.font = font;
+      for (let v = 0; v <= maxV; v += 10) {
+        const yy = y(v);
+        ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+        ctx.fillStyle = '#333';
+        ctx.textAlign = 'right';
+        ctx.fillText(v.toFixed(0), pad.l - 6, yy + 3);
+      }
+
+      // time labels — use elapsed seconds from start, not absolute timestamps
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#333';
+      const tStep = rangeT > 600 ? 120 : rangeT > 300 ? 60 : rangeT > 60 ? 15 : 5;
+      const maxLabels = 15;
+      let labelCount = 0;
+      for (let elapsed = 0; elapsed <= rangeT && labelCount < maxLabels; elapsed += tStep) {
+        if (elapsed === 0) continue;
+        const absT = minT + elapsed;
+        const m = Math.floor(elapsed / 60);
+        const s = Math.floor(elapsed % 60);
+        ctx.fillText(`${m}:${s.toString().padStart(2, '0')}`, x(absT), H - pad.b + 16);
+        labelCount++;
+      }
+
+      // baseline line
+      if (data.length > 0) {
+        const bl = data[data.length - 1].baseline;
+        if (bl > 0 && bl < maxV) {
+          ctx.strokeStyle = '#444';
+          ctx.setLineDash([4, 6]);
+          ctx.beginPath();
+          ctx.moveTo(pad.l, y(bl));
+          ctx.lineTo(W - pad.r, y(bl));
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#555';
+          ctx.textAlign = 'left';
+          ctx.fillText(`baseline ${bl.toFixed(0)}ms`, W - pad.r - 100, y(bl) - 6);
+        }
+      }
+
+      // color-coded RMSSD area fill
+      ctx.globalAlpha = 0.12;
+      for (let i = 1; i < data.length; i++) {
+        const d = data[i];
+        ctx.fillStyle = d.hex || '#4af';
+        ctx.beginPath();
+        ctx.moveTo(x(data[i-1].ts), y(data[i-1].rmssd));
+        ctx.lineTo(x(d.ts), y(d.rmssd));
+        ctx.lineTo(x(d.ts), y(0));
+        ctx.lineTo(x(data[i-1].ts), y(0));
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // RMSSD line segments colored by hex
+      ctx.lineWidth = 2.5 * devicePixelRatio;
+      for (let i = 1; i < data.length; i++) {
+        ctx.strokeStyle = data[i].hex || '#4af';
+        ctx.beginPath();
+        ctx.moveTo(x(data[i-1].ts), y(data[i-1].rmssd));
+        ctx.lineTo(x(data[i].ts), y(data[i].rmssd));
+        ctx.stroke();
+      }
+
+      // movement spikes (if present) — thin bars along the bottom
+      for (let i = 0; i < data.length; i++) {
+        const mv = data[i].movement || 0;
+        if (mv > 0.05) {
+          ctx.fillStyle = `rgba(255,200,80,${Math.min(0.6, mv)})`;
+          const barH = mv * ch * 0.15;
+          ctx.fillRect(x(data[i].ts) - 1, H - pad.b - barH, 2, barH);
+        }
+      }
+
+      // current value dot with glow
+      if (data.length > 0) {
+        const last = data[data.length - 1];
+        const cx_ = x(last.ts), cy_ = y(last.rmssd);
+        ctx.save();
+        ctx.shadowColor = last.hex || '#4af';
+        ctx.shadowBlur = 16 * devicePixelRatio;
+        ctx.fillStyle = last.hex || '#fff';
+        ctx.beginPath();
+        ctx.arc(cx_, cy_, 5 * devicePixelRatio, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        // value label
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${last.rmssd.toFixed(1)}ms`, cx_ + 8, cy_ - 4);
+      }
+    }
+
+    // WebSocket to hrv_lights daemon
+    let ws;
+    function connect() {
+      ws = new WebSocket('ws://localhost:8082');
+      ws.onopen = () => {
+        document.getElementById('status').textContent = 'connected';
+        sessionStart = Date.now();
+      };
+      ws.onclose = () => {
+        document.getElementById('status').textContent = 'disconnected — retrying…';
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === 'presets') {
+          const el = document.getElementById('presets');
+          el.innerHTML = '';
+          for (const [name, desc] of Object.entries(msg.presets)) {
+            const btn = document.createElement('button');
+            btn.textContent = name;
+            btn.title = desc;
+            if (name === msg.active) btn.className = 'active';
+            btn.onclick = () => {
+              ws.send(JSON.stringify({cmd: 'preset', name}));
+              el.querySelectorAll('button').forEach(b => b.className = '');
+              btn.className = 'active';
+            };
+            el.appendChild(btn);
+          }
+          return;
+        }
+
+        if (msg.type === 'preset_changed') {
+          document.querySelectorAll('#presets button').forEach(b => {
+            b.className = b.textContent === msg.name ? 'active' : '';
+          });
+          return;
+        }
+
+        if (msg.type === 'history') {
+          data = msg.data;
+          document.getElementById('session').textContent =
+            `${data.length} historical readings loaded`;
+          draw();
+          return;
+        }
+
+        if (msg.type === 'tick') {
+          data.push(msg);
+          if (data.length > 600) data.shift();
+
+          document.getElementById('vRmssd').textContent = msg.rmssd.toFixed(1);
+          document.getElementById('vBaseline').textContent = `baseline ${msg.baseline.toFixed(0)}`;
+
+          const trendEl = document.getElementById('vTrend');
+          trendEl.textContent = (msg.trend >= 0 ? '+' : '') + msg.trend.toFixed(2);
+          trendEl.className = 'val ' + (msg.trend > 0.3 ? 'trend-up' : msg.trend < -0.3 ? 'trend-down' : 'trend-flat');
+
+          const word = document.getElementById('vTrendWord');
+          if (msg.trend > 0.5) word.textContent = 'recovering';
+          else if (msg.trend > 0.2) word.textContent = 'rising';
+          else if (msg.trend < -0.5) word.textContent = 'dropping fast';
+          else if (msg.trend < -0.2) word.textContent = 'declining';
+          else word.textContent = 'stable';
+
+          document.getElementById('vDrop').textContent = (msg.drop * 100).toFixed(0) + '%';
+          document.getElementById('vHR').textContent = msg.hr;
+          document.getElementById('vPulse').textContent = msg.pulse_bpm.toFixed(1);
+          document.getElementById('vHex').textContent = msg.hex;
+
+          const mv = msg.movement || 0;
+          document.getElementById('vMove').textContent = (mv * 100).toFixed(0) + '%';
+          document.getElementById('vMoveBar').textContent = '█'.repeat(Math.round(mv * 10));
+
+          const sw = document.getElementById('swatch');
+          sw.style.background = msg.hex;
+          sw.style.setProperty('--glow', msg.hex);
+
+          const elapsed = Math.round((Date.now() - sessionStart) / 1000);
+          const m = Math.floor(elapsed / 60);
+          const s = elapsed % 60;
+          document.getElementById('session').textContent =
+            `session ${m}:${s.toString().padStart(2, '0')} · ${data.length} readings`;
+
+          draw();
+        }
+      };
+    }
+    connect();
+  </script>
+</body>
+</html>

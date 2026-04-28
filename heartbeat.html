@@ -55,108 +55,384 @@ canvas { display:block; width:100%; height:100%; }
   let currentHR = 0;
   let currentRMSSD = 0;
   let lastBeatTime = 0;
-  let beatPhase = 1; // 0=just beat, 1=resting
+  let beatPhase = 1;
   let expectedInterval = 1;
   let rrHistory = [];
   const RR_MAX = 30;
+  let breath01 = 0.5; // 0=exhale, 1=inhale from bridge
 
   // Visual style
-  let style = 0; // 0=pulse, 1=ring, 2=particles
+  let style = 0;
   const STYLES = ['pulse', 'ring', 'particles'];
+
+  // ── Harmonic engine ──
+  // HRV determines the chord quality. Each heartbeat steps the progression.
+  // Particle collisions play notes from the current chord.
+  const CHORDS = {
+    // calm → warm major/add9 voicings
+    bliss:    [1, 5/4, 3/2, 2, 5/2],       // major add9
+    calm:     [1, 5/4, 3/2, 15/8],          // major 7
+    easy:     [1, 5/4, 3/2, 9/4],           // major 9
+    // mid → suspended, open
+    neutral:  [1, 4/3, 3/2, 2],             // sus4
+    drift:    [1, 9/8, 3/2, 2],             // sus2
+    // stress → minor, diminished
+    tense:    [1, 6/5, 3/2, 9/5],           // minor 7
+    dark:     [1, 6/5, 36/25, 9/5],         // half-dim
+    edge:     [1, 6/5, 36/25, 16/9],        // diminished
+  };
+  const CALM_PROGRESSION = ['bliss', 'calm', 'easy', 'calm'];
+  const MID_PROGRESSION  = ['neutral', 'drift', 'neutral', 'calm'];
+  const STRESS_PROGRESSION = ['tense', 'dark', 'tense', 'edge'];
+
+  let chordIdx = 0;
+  let currentChordName = 'neutral';
+  let currentRoot = 130.81; // C3
+
+  // roots move through a calm cycle: C → G → Am → F (I → V → vi → IV)
+  const ROOT_CYCLE_CALM   = [130.81, 196.00, 220.00, 174.61];
+  const ROOT_CYCLE_STRESS = [130.81, 123.47, 116.54, 110.00]; // descending minor
+
+  function advanceHarmony() {
+    const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
+    let prog, roots;
+    if (hrvCalm > 0.65) { prog = CALM_PROGRESSION; roots = ROOT_CYCLE_CALM; }
+    else if (hrvCalm > 0.3) { prog = MID_PROGRESSION; roots = ROOT_CYCLE_CALM; }
+    else { prog = STRESS_PROGRESSION; roots = ROOT_CYCLE_STRESS; }
+
+    chordIdx = (chordIdx + 1) % prog.length;
+    currentChordName = prog[chordIdx];
+    currentRoot = roots[chordIdx % roots.length];
+  }
+
+  function getChordFreqs() {
+    const ratios = CHORDS[currentChordName] || CHORDS.neutral;
+    return ratios.map(r => currentRoot * r);
+  }
+
+  // state descriptor for UI
+  function getHrvState() {
+    if (currentRMSSD <= 0) return { label: '—', level: 0.5 };
+    const calm = Math.max(0, Math.min(1, (currentRMSSD - 5) / 35));
+    if (calm > 0.7) return { label: 'calm', level: calm };
+    if (calm > 0.5) return { label: 'settling', level: calm };
+    if (calm > 0.3) return { label: 'active', level: calm };
+    if (calm > 0.15) return { label: 'tense', level: calm };
+    return { label: 'stressed', level: calm };
+  }
 
   // Particle system
   const particles = [];
-  const MAX_PARTICLES = 800;
+  const MAX_PARTICLES = 1200;
+
+  // Particle types: bass (large, slow, deep), mid (medium, melodic), glass (tiny, fast, crystalline)
+  const PTYPES = {
+    bass:  { sizeMin: 6, sizeMax: 14, speedMin: 20,  speedMax: 80,  lifeMin: 4, lifeMax: 8,  gravMul: 1.5, dragMin: 0.985, dragMax: 0.995 },
+    mid:   { sizeMin: 2, sizeMax: 6,  speedMin: 60,  speedMax: 200, lifeMin: 2, lifeMax: 5,  gravMul: 1.0, dragMin: 0.97,  dragMax: 0.99 },
+    glass: { sizeMin: 1, sizeMax: 3,  speedMin: 150, speedMax: 400, lifeMin: 0.8, lifeMax: 2, gravMul: 0.3, dragMin: 0.95,  dragMax: 0.97 },
+  };
 
   function spawnBeat(now) {
-    // Spawn a burst of particles from center on each heartbeat
     const cx = W/2, cy = H/2;
-    const count = 30 + Math.floor(currentHR / 5); // more particles at higher HR
     const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
+    // high HRV = more bass, low HRV = more glass shards
+    const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 40)) : 0.5;
 
-    for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 40 + Math.random() * 200 + hrStress * 150;
-      const life = 2 + Math.random() * 4 + (1 - hrStress) * 3; // calm = longer life
-      const size = 2 + Math.random() * 6;
-      particles.push({
-        x: cx + (Math.random() - 0.5) * 20,
-        y: cy + (Math.random() - 0.5) * 20,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed - 30, // slight upward bias
-        size,
-        maxSize: size,
-        life,
-        maxLife: life,
-        born: now,
-        // Per-particle color variation
-        hue: Math.random() * 0.05, // slight orange shift
-        drag: 0.97 + Math.random() * 0.025, // organic — each particle decelerates differently
-        gravity: 15 + Math.random() * 25, // gentle downward pull
-        wobble: (Math.random() - 0.5) * 2, // lateral drift
-      });
+    const bassCount  = Math.floor(5 + hrvCalm * 12);
+    const midCount   = Math.floor(15 + currentHR / 8);
+    const glassCount = Math.floor(5 + (1 - hrvCalm) * 20 + hrStress * 15);
+
+    function spawn(ptype, count) {
+      const p = PTYPES[ptype];
+      for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = p.speedMin + Math.random() * (p.speedMax - p.speedMin) + hrStress * 50;
+        const ringBonus = style === 1 ? 6 : 0; // particles live longer inside the ring
+        const life = p.lifeMin + Math.random() * (p.lifeMax - p.lifeMin) + hrvCalm * 2 + ringBonus;
+        const size = p.sizeMin + Math.random() * (p.sizeMax - p.sizeMin);
+        particles.push({
+          x: cx + (Math.random() - 0.5) * 20,
+          y: cy + (Math.random() - 0.5) * 20,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - (ptype === 'glass' ? 80 : 20),
+          size, maxSize: size, life, maxLife: life, born: now,
+          type: ptype,
+          hue: ptype === 'bass' ? 0.0 : ptype === 'mid' ? Math.random() * 0.06 : 0.12 + Math.random() * 0.08,
+          drag: p.dragMin + Math.random() * (p.dragMax - p.dragMin),
+          gravity: (15 + Math.random() * 25) * p.gravMul,
+          wobble: (Math.random() - 0.5) * (ptype === 'glass' ? 6 : 2),
+        });
+      }
+    }
+
+    spawn('bass', bassCount);
+    spawn('mid', midCount);
+    spawn('glass', glassCount);
+  }
+
+  // ── collision sounds ──
+  // per-channel throttle so bass doesn't block glass
+  const lastSoundBy = { bass: 0, mid: 0, glass: 0, pair: 0 };
+  const SOUND_GAP = { bass: 0.06, mid: 0.04, glass: 0.03, pair: 0.025 };
+
+  // pentatonic scale for pair collisions — size determines pitch
+  const PENTA = [1, 9/8, 5/4, 3/2, 5/3, 2, 9/4, 5/2, 3, 10/3]; // 2 octaves
+
+  function playCollisionSound(speed, ptype, pitch) {
+    if (!audioCtx || audioMode === 0) return;
+    const t = audioCtx.currentTime;
+    const ch = ptype;
+    if (t - (lastSoundBy[ch] || 0) < SOUND_GAP[ch]) return;
+    lastSoundBy[ch] = t;
+
+    const impact = Math.min(1, speed / 250);
+    if (impact < 0.08) return;
+
+    if (ptype === 'bass') {
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(35 + impact * 25, t);
+      osc.frequency.exponentialRampToValueAtTime(20, t + 0.2);
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.18, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.25);
+    } else if (ptype === 'glass') {
+      const dur = 0.015 + Math.random() * 0.02;
+      const len = Math.floor(audioCtx.sampleRate * dur);
+      const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = (Math.random()*2-1) * Math.exp(-i/(len*0.04));
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const freq = pitch || (4000 + Math.random() * 8000);
+      const filt = audioCtx.createBiquadFilter();
+      filt.type = 'bandpass'; filt.frequency.value = freq; filt.Q.value = 25 + Math.random() * 50;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.07, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06 + Math.random() * 0.12);
+      src.connect(filt); filt.connect(g); g.connect(audioCtx.destination);
+      src.start(t); src.stop(t + dur + 0.01);
+    } else if (ptype === 'mid') {
+      const osc = audioCtx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = pitch || (180 + Math.random() * 300);
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.05, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      const filt = audioCtx.createBiquadFilter();
+      filt.type = 'lowpass'; filt.frequency.value = 900; filt.Q.value = 2;
+      osc.connect(filt); filt.connect(g); g.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.12);
+    } else if (ptype === 'pair') {
+      // inter-particle collision: tuned note from pentatonic scale
+      const noteHz = pitch || 220;
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = noteHz;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.035, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.3 + impact * 0.4);
+      // gentle reverb
+      const del = audioCtx.createDelay(); del.delayTime.value = 0.08;
+      const dg = audioCtx.createGain(); dg.gain.value = 0.08;
+      osc.connect(g); g.connect(audioCtx.destination);
+      g.connect(del); del.connect(dg); dg.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.8);
     }
   }
 
+  // containment radius for ring mode — set during render
+  let containRadius = 0;
+  let containCx = 0, containCy = 0;
+
+  // mass from particle type
+  function pmass(p) { return p.type === 'bass' ? 4 : p.type === 'mid' ? 1 : 0.3; }
+
   function updateParticles(dt, now) {
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      const age = now - p.born;
-      if (age > p.maxLife) {
+    const inRing = style === 1 && containRadius > 0;
+    const G = 300; // gravity px/s²
+    const n = particles.length;
+
+    // remove dead
+    for (let i = n - 1; i >= 0; i--) {
+      if (now - particles[i].born > particles[i].maxLife) {
         particles.splice(i, 1);
-        continue;
+      }
+    }
+
+    // inter-particle collisions (check nearby pairs, not O(n²) full)
+    // spatial hash with cell size ~30px
+    const cellSize = 30;
+    const grid = {};
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const cx = Math.floor(p.x / cellSize);
+      const cy = Math.floor(p.y / cellSize);
+      const key = cx + ',' + cy;
+      (grid[key] || (grid[key] = [])).push(i);
+    }
+
+    for (const key in grid) {
+      const cell = grid[key];
+      const [cx, cy] = key.split(',').map(Number);
+      // check this cell + neighbors
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const nkey = (cx+dx) + ',' + (cy+dy);
+          const ncell = grid[nkey];
+          if (!ncell) continue;
+          for (const i of cell) {
+            for (const j of ncell) {
+              if (j <= i) continue;
+              const a = particles[i], b = particles[j];
+              const ddx = b.x - a.x, ddy = b.y - a.y;
+              const dist = Math.sqrt(ddx*ddx + ddy*ddy);
+              const minDist = a.maxSize + b.maxSize;
+              if (dist < minDist && dist > 0.1) {
+                // elastic collision
+                const nx = ddx/dist, ny = ddy/dist;
+                const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+                const dvn = dvx*nx + dvy*ny;
+                if (dvn > 0) { // approaching
+                  const ma = pmass(a), mb = pmass(b);
+                  const impulse = 2 * dvn / (ma + mb);
+                  a.vx -= impulse * mb * nx;
+                  a.vy -= impulse * mb * ny;
+                  b.vx += impulse * ma * nx;
+                  b.vy += impulse * ma * ny;
+                  // separate
+                  const overlap = minDist - dist;
+                  a.x -= nx * overlap * 0.5;
+                  a.y -= ny * overlap * 0.5;
+                  b.x += nx * overlap * 0.5;
+                  b.y += ny * overlap * 0.5;
+
+                  // collision note: pick from current chord, octave from size
+                  const cFreqs = getChordFreqs();
+                  const combinedSize = a.maxSize + b.maxSize;
+                  const sizeNorm = Math.max(0, Math.min(1, 1 - (combinedSize - 2) / 20));
+                  const idx = Math.floor(sizeNorm * (cFreqs.length - 0.01));
+                  const octave = sizeNorm > 0.7 ? 2 : sizeNorm > 0.4 ? 1 : 0.5;
+                  const noteHz = cFreqs[idx] * octave;
+                  const relSpeed = Math.abs(dvn);
+                  playCollisionSound(relSpeed, 'pair', noteHz);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // integrate
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+
+      // real gravity — always downward, scaled by mass
+      if (inRing) {
+        // reduced gravity in ring, still pulls down
+        p.vy += G * 0.25 * dt;
+      } else {
+        p.vy += G * dt;
       }
 
-      // Physics
-      p.vy += p.gravity * dt; // gravity
-      p.vx += p.wobble * dt * 30; // lateral wobble
-      p.vx *= p.drag;
-      p.vy *= p.drag;
+      // air drag (velocity-dependent, not constant multiplier)
+      const speed = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+      if (speed > 0) {
+        const dragForce = speed * speed * 0.0003 / pmass(p);
+        const dragFactor = Math.max(0, 1 - dragForce * dt);
+        p.vx *= dragFactor;
+        p.vy *= dragFactor;
+      }
+
+      // wobble (brownian)
+      p.vx += (Math.random() - 0.5) * p.wobble * 20 * dt;
+
       p.x += p.vx * dt;
       p.y += p.vy * dt;
 
-      // Soft floor bounce
-      if (p.y > H - 10) {
-        p.y = H - 10;
-        p.vy *= -0.3;
-        p.vx *= 0.8;
+      if (inRing) {
+        const dx = p.x - containCx, dy = p.y - containCy;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > containRadius - p.maxSize) {
+          const nx = dx/dist, ny = dy/dist;
+          p.x = containCx + nx * (containRadius - p.maxSize - 1);
+          p.y = containCy + ny * (containRadius - p.maxSize - 1);
+          const dot = p.vx*nx + p.vy*ny;
+          const spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+          p.vx -= 1.8 * dot * nx;
+          p.vy -= 1.8 * dot * ny;
+          p.vx *= 0.75;
+          p.vy *= 0.75;
+          playCollisionSound(spd, p.type);
+        }
+      } else {
+        // floor
+        if (p.y > H - 10) {
+          const spd = Math.abs(p.vy);
+          p.y = H - 10;
+          p.vy *= -0.4; // bouncier
+          p.vx *= 0.85;
+          if (spd > 15) playCollisionSound(spd, p.type);
+        }
+        // walls
+        if (p.x < 0) {
+          const spd = Math.abs(p.vx);
+          p.x = 0; p.vx *= -0.5;
+          if (spd > 20) playCollisionSound(spd, p.type);
+        }
+        if (p.x > W) {
+          const spd = Math.abs(p.vx);
+          p.x = W; p.vx *= -0.5;
+          if (spd > 20) playCollisionSound(spd, p.type);
+        }
       }
-      // Side walls
-      if (p.x < 0) { p.x = 0; p.vx *= -0.5; }
-      if (p.x > W) { p.x = W; p.vx *= -0.5; }
 
-      // Life fraction (0=born, 1=dead)
-      p.life = p.maxLife - age;
+      p.life = p.maxLife - (now - p.born);
     }
   }
 
   function drawParticles(hrStress) {
     for (const p of particles) {
-      const lifeFrac = p.life / p.maxLife; // 1=fresh, 0=dying
-
-      // Ease out: particles fade and shrink gently at end of life
-      // Using cubic ease-out for organic feel
+      const lifeFrac = p.life / p.maxLife;
       const easedLife = 1 - Math.pow(1 - lifeFrac, 3);
-      const alpha = easedLife * (0.3 + hrStress * 0.5);
       const size = p.maxSize * (0.3 + easedLife * 0.7);
+      let r, g, b, alpha;
 
-      // Color: warm red, shifts toward orange/ember as particle ages
-      const r = 200 + (1 - lifeFrac) * 55; // brighter as it ages (ember)
-      const g = 30 + (1 - lifeFrac) * 50 + p.hue * 400;
-      const b = 15 + (1 - lifeFrac) * 15;
+      if (p.type === 'bass') {
+        // deep red-maroon, large glow, slow fade
+        alpha = easedLife * (0.4 + hrStress * 0.3);
+        r = 180 + (1 - lifeFrac) * 40;
+        g = 15 + p.hue * 100;
+        b = 10;
+      } else if (p.type === 'glass') {
+        // bright white-blue-cyan, sharp, sparkly
+        alpha = easedLife * easedLife * (0.5 + hrStress * 0.4);
+        r = 180 + (1 - lifeFrac) * 75;
+        g = 200 + (1 - lifeFrac) * 55;
+        b = 220 + (1 - lifeFrac) * 35;
+      } else {
+        // mid: warm orange-amber ember
+        alpha = easedLife * (0.35 + hrStress * 0.4);
+        r = 210 + (1 - lifeFrac) * 45;
+        g = 50 + (1 - lifeFrac) * 60 + p.hue * 400;
+        b = 15 + (1 - lifeFrac) * 20;
+      }
 
-      // Glow for larger particles
-      if (size > 3 && alpha > 0.1) {
-        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 3);
-        grad.addColorStop(0, `rgba(${r|0},${g|0},${b|0},${alpha * 0.3})`);
+      // Glow halo — bass gets big halos, glass gets small sharp ones
+      const glowMul = p.type === 'bass' ? 4 : p.type === 'glass' ? 1.5 : 2.5;
+      if (size > 1.5 && alpha > 0.08) {
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * glowMul);
+        grad.addColorStop(0, `rgba(${r|0},${g|0},${b|0},${alpha * 0.25})`);
         grad.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, size * 3, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, size * glowMul, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Core dot
       ctx.beginPath();
       ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(${r|0},${g|0},${b|0},${alpha})`;
@@ -176,125 +452,145 @@ canvas { display:block; width:100%; height:100%; }
 
   // Audio mode
   let audioMode = 0;
-  const AUDIO_MODES = ['off', 'heartbeat', 'tonal', 'musical', 'all'];
+  const AUDIO_MODES = ['off', 'bass', 'bass+glass', 'bass+glass+melody', 'all'];
 
   function playHeartSound() {
     if (!audioCtx || audioMode === 0) return;
     const t = audioCtx.currentTime;
+    advanceHarmony();
+    const freqs = getChordFreqs();
+    const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 35)) : 0.5;
     const hrStress = currentHR > 0 ? Math.max(0, Math.min(1, (currentHR - 60) / 80)) : 0;
-    // Coherence: how regular are the RR intervals? Low variance = high coherence
+    const hrvCalm = currentRMSSD > 0 ? Math.max(0, Math.min(1, (currentRMSSD - 5) / 40)) : 0.5;
     let coherence = 0.5;
     if (rrHistory.length >= 4) {
       const mean = rrHistory.reduce((a,b)=>a+b,0) / rrHistory.length;
       const variance = rrHistory.reduce((a,b)=>a+(b-mean)**2,0) / rrHistory.length;
       const cv = Math.sqrt(variance) / mean;
-      coherence = Math.max(0, Math.min(1, 1 - cv * 5)); // 0=chaotic, 1=metronomic
+      coherence = Math.max(0, Math.min(1, 1 - cv * 5));
     }
 
-    if (audioMode === 1 || audioMode === 4) {
-      // LUB-DUB: thump sound
-      for (const [delay, freq, q, vol, dur] of [[0, 60, 8, 0.6, 0.1], [0.12, 90, 6, 0.3, 0.08]]) {
-        const len = audioCtx.sampleRate * dur;
+    // ── BASS LAYER: sub-bass thump with body ──
+    if (audioMode >= 1) {
+      const bassVol = 0.4 + hrvCalm * 0.4;
+
+      // sub-bass sine hit — the chest thump
+      const sub = audioCtx.createOscillator();
+      sub.type = 'sine';
+      sub.frequency.setValueAtTime(currentRoot * 0.5, t);
+      sub.frequency.exponentialRampToValueAtTime(currentRoot * 0.25, t + 0.2);
+      const subGain = audioCtx.createGain();
+      subGain.gain.setValueAtTime(bassVol * 0.5, t);
+      subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      sub.connect(subGain); subGain.connect(audioCtx.destination);
+      sub.start(t); sub.stop(t + 0.3);
+
+      // lub-dub noise thump on top
+      for (const [delay, freq, q, dur] of [[0, 50, 12, 0.12], [0.11, 80, 8, 0.08]]) {
+        const len = Math.floor(audioCtx.sampleRate * dur);
         const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
         const data = buf.getChannelData(0);
-        for (let i = 0; i < len; i++) data[i] = (Math.random()*2-1) * Math.exp(-i/(len*0.15));
+        for (let i = 0; i < len; i++) data[i] = (Math.random()*2-1) * Math.exp(-i/(len*0.1));
         const src = audioCtx.createBufferSource();
         src.buffer = buf;
         const filt = audioCtx.createBiquadFilter();
         filt.type = 'lowpass'; filt.frequency.value = freq; filt.Q.value = q;
         const gain = audioCtx.createGain();
-        gain.gain.setValueAtTime(vol, t+delay);
-        gain.gain.exponentialRampToValueAtTime(0.001, t+delay+dur+0.05);
+        gain.gain.setValueAtTime(bassVol * (delay ? 0.4 : 0.7), t+delay);
+        gain.gain.exponentialRampToValueAtTime(0.001, t+delay+dur+0.06);
         src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
         src.start(t+delay); src.stop(t+delay+dur+0.1);
       }
     }
 
-    if (audioMode === 2 || audioMode === 4) {
-      // TONAL: pitch reflects RMSSD, detune reflects coherence
-      // High RMSSD = warm low tone (peaceful), low RMSSD = higher tense tone
-      const basePitch = 220 - Math.min(currentRMSSD, 80) * 1.5; // 220Hz at RMSSD 0, 100Hz at RMSSD 80
-      const detune = (1 - coherence) * 30; // incoherent = out of tune
+    // ── GLASS LAYER: noise-based shatter with resonant ringing ──
+    if (audioMode >= 2) {
+      const glassVol = 0.08 + (1 - hrvCalm) * 0.15;
+      const shardCount = 1 + Math.floor((1 - hrvCalm) * 3);
+      for (let s = 0; s < shardCount; s++) {
+        const sDelay = Math.random() * 0.06;
+        // white noise burst — the crack
+        const dur = 0.03 + Math.random() * 0.04;
+        const len = Math.floor(audioCtx.sampleRate * dur);
+        const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.08));
+        }
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
 
-      const osc = audioCtx.createOscillator();
-      osc.type = 'triangle';
-      osc.frequency.value = basePitch + (Math.random() - 0.5) * detune;
+        // high-pass to keep only the sharp crack
+        const hp = audioCtx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 3000 + Math.random() * 5000;
+        hp.Q.value = 0.5;
 
-      // Add a fifth above when coherent (consonant harmony)
-      const osc2 = audioCtx.createOscillator();
-      osc2.type = 'sine';
-      osc2.frequency.value = basePitch * 1.5 + (Math.random() - 0.5) * detune * 2;
+        // resonant ring — the tinkle after the crack
+        const ring = audioCtx.createBiquadFilter();
+        ring.type = 'bandpass';
+        ring.frequency.value = 4000 + Math.random() * 8000;
+        ring.Q.value = 40 + Math.random() * 60;
 
-      const gain = audioCtx.createGain();
-      const vol = 0.08 + coherence * 0.07; // louder when coherent
-      gain.gain.setValueAtTime(vol, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8 + coherence * 1.2); // longer sustain when coherent
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(glassVol * (0.5 + Math.random() * 0.5), t + sDelay);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + sDelay + 0.1 + Math.random() * 0.15);
 
-      const gain2 = audioCtx.createGain();
-      gain2.gain.setValueAtTime(coherence * 0.05, t); // harmony only audible when coherent
-      gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+        src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+        // parallel ring path for shimmer tail
+        const ringGain = audioCtx.createGain();
+        ringGain.gain.setValueAtTime(glassVol * 0.3, t + sDelay);
+        ringGain.gain.exponentialRampToValueAtTime(0.0001, t + sDelay + 0.3 + Math.random() * 0.4);
+        src.connect(ring); ring.connect(ringGain); ringGain.connect(audioCtx.destination);
 
-      // Filter: muffled when stressed, bright when calm
-      const filt = audioCtx.createBiquadFilter();
-      filt.type = 'lowpass';
-      filt.frequency.value = 400 + (1 - hrStress) * 2000;
-      filt.Q.value = 1;
-
-      osc.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
-      osc2.connect(gain2); gain2.connect(audioCtx.destination);
-      osc.start(t); osc.stop(t + 2);
-      osc2.start(t); osc2.stop(t + 1);
+        src.start(t + sDelay); src.stop(t + sDelay + dur + 0.01);
+      }
     }
 
-    if (audioMode === 3 || audioMode === 4) {
-      // MUSICAL: pentatonic notes chosen by RR interval, chord quality by coherence
-      // Map RR interval to pentatonic scale degree
-      const lastRR = rrHistory.length > 0 ? rrHistory[rrHistory.length-1] : 800;
-      const pentatonic = [1, 9/8, 5/4, 3/2, 5/3]; // major pentatonic ratios
-      const degree = Math.floor((lastRR % 500) / 100) % 5;
-      const rootHz = 130.81; // C3
-      const noteHz = rootHz * pentatonic[degree];
+    // ── LAYER 3: chord pad — strummed from harmonic engine ──
+    if (audioMode >= 3) {
+      const sustain = 0.8 + hrvCalm * 2.5;
+      const vol = 0.03 + hrvCalm * 0.03;
+      const waveType = hrvCalm > 0.5 ? 'sine' : 'triangle';
 
-      // Root note
-      const osc = audioCtx.createOscillator();
-      osc.type = coherence > 0.6 ? 'sine' : 'sawtooth'; // clean when coherent, gritty when not
-      osc.frequency.value = noteHz;
+      freqs.forEach((freq, i) => {
+        const strum = i * 0.035; // staggered for strum feel
+        const osc = audioCtx.createOscillator();
+        osc.type = waveType;
+        osc.frequency.value = freq;
+        // vibrato when stressed
+        if (hrvCalm < 0.3) {
+          osc.frequency.setValueAtTime(freq, t + strum);
+          osc.frequency.linearRampToValueAtTime(freq * 1.004, t + strum + 0.2);
+          osc.frequency.linearRampToValueAtTime(freq * 0.996, t + strum + 0.4);
+          osc.frequency.linearRampToValueAtTime(freq, t + strum + 0.6);
+        }
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(vol * (i === 0 ? 1.0 : 0.55), t + strum);
+        g.gain.exponentialRampToValueAtTime(0.0005, t + strum + sustain);
+        const filt = audioCtx.createBiquadFilter();
+        filt.type = 'lowpass';
+        filt.frequency.value = 500 + hrvCalm * 3500;
+        filt.Q.value = 0.7;
+        osc.connect(filt); filt.connect(g); g.connect(audioCtx.destination);
+        osc.start(t + strum); osc.stop(t + strum + sustain + 0.1);
+      });
 
-      // Octave above (soft)
-      const osc2 = audioCtx.createOscillator();
-      osc2.type = 'sine';
-      osc2.frequency.value = noteHz * 2;
-
-      // Third (major when coherent, minor when stressed)
-      const osc3 = audioCtx.createOscillator();
-      osc3.type = 'sine';
-      const thirdRatio = coherence > 0.5 ? 5/4 : 6/5; // major third vs minor third
-      osc3.frequency.value = noteHz * thirdRatio;
-
-      const masterGain = audioCtx.createGain();
-      masterGain.gain.setValueAtTime(0.06, t);
-      masterGain.gain.exponentialRampToValueAtTime(0.001, t + 1.5 + coherence * 2);
-
-      const gain2 = audioCtx.createGain();
-      gain2.gain.value = 0.03;
-      const gain3 = audioCtx.createGain();
-      gain3.gain.value = coherence * 0.04; // chord only when coherent
-
-      // Reverb-like: delayed quiet copy
-      const delay = audioCtx.createDelay();
-      delay.delayTime.value = 0.15;
-      const delayGain = audioCtx.createGain();
-      delayGain.gain.value = 0.15;
-
-      osc.connect(masterGain);
-      osc2.connect(gain2); gain2.connect(masterGain);
-      osc3.connect(gain3); gain3.connect(masterGain);
-      masterGain.connect(audioCtx.destination);
-      masterGain.connect(delay); delay.connect(delayGain); delayGain.connect(audioCtx.destination);
-
-      osc.start(t); osc.stop(t + 3);
-      osc2.start(t + 0.02); osc2.stop(t + 2);
-      osc3.start(t + 0.05); osc3.stop(t + 2.5);
+      // octave shimmer when very calm
+      if (hrvCalm > 0.55) {
+        const sh = audioCtx.createOscillator();
+        sh.type = 'sine';
+        sh.frequency.value = freqs[0] * 2;
+        const sg = audioCtx.createGain();
+        sg.gain.setValueAtTime(0.015, t + 0.1);
+        sg.gain.exponentialRampToValueAtTime(0.0005, t + sustain * 1.5);
+        // delay tail
+        const del = audioCtx.createDelay(); del.delayTime.value = 0.18;
+        const dg = audioCtx.createGain(); dg.gain.value = 0.10;
+        sh.connect(sg); sg.connect(audioCtx.destination);
+        sg.connect(del); del.connect(dg); dg.connect(audioCtx.destination);
+        sh.start(t + 0.1); sh.stop(t + sustain * 1.5 + 0.2);
+      }
     }
   }
 
@@ -306,6 +602,15 @@ canvas { display:block; width:100%; height:100%; }
     ws.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
+        if (d.type === 'acc') {
+          // derive breath from acc magnitude
+          // simplified: use Z-axis variation as breath proxy
+          if (d.samples && d.samples.length > 0) {
+            const last = d.samples[d.samples.length - 1];
+            const mag = Math.sqrt(last[0]*last[0] + last[1]*last[1] + last[2]*last[2]);
+            breath01 = Math.max(0, Math.min(1, breath01 * 0.95 + (mag / 1100) * 0.05));
+          }
+        }
         if (d.type === 'hr') {
           if (d.bpm) currentHR = d.bpm;
           if (d.rr) for (const rr of d.rr) {
@@ -384,6 +689,8 @@ canvas { display:block; width:100%; height:100%; }
 
     const cx = W/2, cy = H/2;
 
+    if (style !== 1) containRadius = 0;
+
     if (style === 0) {
       // PULSE: expanding circle from center
       const maxR = Math.min(W, H) * 0.4;
@@ -405,13 +712,16 @@ canvas { display:block; width:100%; height:100%; }
       ctx.fill();
 
     } else if (style === 1) {
-      // RING: pulsing ring that expands on beat
-      const baseR = Math.min(W, H) * 0.25;
-      const r = baseR + beat * baseR * 0.3;
-      const lineW = 3 + beat * 15 + hrStress * 5;
+      // RING: pulsing ring that contains particles
+      const baseR = Math.min(W, H) * 0.35;
+      const r = baseR + beat * baseR * 0.08;
+      containRadius = r;
+      containCx = cx;
+      containCy = cy;
+      const lineW = 2 + beat * 8 + hrStress * 3;
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI*2);
-      ctx.strokeStyle = getColor(hrStress, 0.3 + beat * 0.7);
+      ctx.strokeStyle = getColor(hrStress, 0.15 + beat * 0.4);
       ctx.lineWidth = lineW;
       ctx.stroke();
 
@@ -447,7 +757,9 @@ canvas { display:block; width:100%; height:100%; }
 
     // Info
     const rmssdStr = currentRMSSD > 0 ? currentRMSSD.toFixed(0) + 'ms' : '--';
-    infoEl.innerHTML = `RMSSD ${rmssdStr} · ${STYLES[style]} · audio: ${AUDIO_MODES[audioMode]} · ${particles.length} particles`;
+    const hrvState = getHrvState();
+    const chordLabel = audioMode >= 3 ? ` · ${currentChordName}` : '';
+    infoEl.innerHTML = `RMSSD ${rmssdStr} <span style="color:${hrvState.level > 0.5 ? '#7a7' : hrvState.level > 0.3 ? '#aa7' : '#a77'}">${hrvState.label}</span> · ${STYLES[style]} · audio: ${AUDIO_MODES[audioMode]}${chordLabel} · ${particles.length}p`;
 
     requestAnimationFrame(render);
   }

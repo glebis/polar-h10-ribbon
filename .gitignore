@@ -4,5 +4,8 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+hrv_log.jsonl
+protocol_log.json
+hrv_lights_config.json
 .enzyme/
 .enzyme-embeddings/

@@ -28,7 +28,7 @@
   <canvas id="c"></canvas>
   <div id="score"><div class="v" id="vScore">—</div><div class="lbl">coherence</div></div>
   <div id="ctrl"></div>
-  <div id="help">↑↓ exercise · F flip · R reset</div>
+  <div id="help">↑↓ exercise · space pause · F flip · R reset</div>
   <div id="nav"></div>
   <div id="status">connecting…</div>
 
@@ -40,6 +40,7 @@
     const bridge = createBridge();
     let selectedExercise = 0;
     let scheduler = createScheduler(exercises[exerciseNames[selectedExercise]]);
+    let paused = false;
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
@@ -76,9 +77,30 @@
         bridge.toggleFlip();
       } else if (e.key === 'r' || e.key === 'R') {
         scheduler.reset();
+      } else if (e.key === ' ') {
+        paused = !paused;
       } else return;
       e.preventDefault();
     });
+
+    // ---- guide amplitude at arbitrary cycle time ----
+    // Sine-eased for smooth, organic curves instead of sharp triangles
+    function guideAmplitude(segs, t) {
+      let elapsed = 0;
+      for (let i = 0; i < segs.length; i++) {
+        if (t < elapsed + segs[i].d) {
+          const frac = (t - elapsed) / segs[i].d;
+          // sine ease: smooth start and end
+          const eased = (1 - Math.cos(frac * Math.PI)) / 2;
+          if (segs[i].p === 'inhale') return eased;
+          if (segs[i].p === 'exhale') return 1 - eased;
+          const prev = segs[(i - 1 + segs.length) % segs.length];
+          return prev.p === 'inhale' ? 1 : 0;
+        }
+        elapsed += segs[i].d;
+      }
+      return 0;
+    }
 
     // ---- rolling history (90 s at 10 Hz) ----
     const FPS = 10;
@@ -131,16 +153,17 @@
       const now = performance.now() / 1000;
       const dt = Math.min(0.1, now - lastT);
       lastT = now;
-      scheduler.tick(dt);
+      if (!paused) scheduler.tick(dt);
 
-      const hrVal = bridge.hrInst > 0 ? bridge.hrInst : bridge.hr;
+      let hrVal = bridge.hrInst > 0 ? bridge.hrInst : bridge.hr;
+      if (!isFinite(hrVal) || hrVal < 20 || hrVal > 250) hrVal = smoothedHR;
       smoothedHR += (hrVal - smoothedHR) * (1 - Math.exp(-dt * 1.5));
+      if (!isFinite(smoothedHR)) smoothedHR = 60;
       smoothedBR += (bridge.breath01 - smoothedBR) * (1 - Math.exp(-dt * 6));
       record(now, smoothedHR, smoothedBR);
 
       const corr = coherence();
-      // HeartMath-style 0-10 score: shift [−1,1] → [0,10], squish negatives
-      const score = Math.max(0, Math.min(10, corr * 10));
+      const score = isFinite(corr) ? Math.max(0, Math.min(10, corr * 10)) : 0;
 
       // ---- render ----
       const dpr = devicePixelRatio;
@@ -206,14 +229,83 @@
       scoreEl.textContent = score.toFixed(1);
       scoreEl.style.color = scoreColor;
 
-      // band on right showing current phase
+      // ---- breathing guide: target waveform overlaid on breath chart ----
       const seg = scheduler.current();
+      const target = scheduler.targetAmplitude();
+      const segs = seg.segments;
+      const cycleDuration = segs.reduce((s, e) => s + e.d, 0);
+      const brTop = padTop + chartH + gap;
+
+      // draw the guide pattern as a repeating waveform across the full chart width
+      // each pixel column = a moment in the pattern's past
+      ctx.save();
+
+      // filled band showing the guide zone (±tolerance)
+      const tolerance = 0.12;
+      ctx.fillStyle = 'rgba(230,178,108,0.06)';
+      ctx.beginPath();
+      for (let px = 0; px <= chartW; px++) {
+        const secsAgo = (1 - px / chartW) * SECONDS;
+        const guideT = ((now - secsAgo) % cycleDuration + cycleDuration) % cycleDuration;
+        const gv = guideAmplitude(segs, guideT);
+        const yHi = brTop + chartH * (1 - Math.min(1, gv + tolerance));
+        if (px === 0) ctx.moveTo(padX + px, yHi); else ctx.lineTo(padX + px, yHi);
+      }
+      for (let px = chartW; px >= 0; px--) {
+        const secsAgo = (1 - px / chartW) * SECONDS;
+        const guideT = ((now - secsAgo) % cycleDuration + cycleDuration) % cycleDuration;
+        const gv = guideAmplitude(segs, guideT);
+        const yLo = brTop + chartH * (1 - Math.max(0, gv - tolerance));
+        ctx.lineTo(padX + px, yLo);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // guide line itself
+      ctx.strokeStyle = '#e6b26c';
+      ctx.lineWidth = 2 * dpr;
+      ctx.globalAlpha = 0.5;
+      ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.beginPath();
+      for (let px = 0; px <= chartW; px += 2) {
+        const secsAgo = (1 - px / chartW) * SECONDS;
+        const guideT = ((now - secsAgo) % cycleDuration + cycleDuration) % cycleDuration;
+        const gv = guideAmplitude(segs, guideT);
+        const yy = brTop + chartH * (1 - gv);
+        if (px === 0) ctx.moveTo(padX + px, yy); else ctx.lineTo(padX + px, yy);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+
+      // current target marker on the right edge
+      const targetY = brTop + chartH * (1 - target);
+      ctx.fillStyle = '#e6b26c';
+      ctx.beginPath();
+      ctx.arc(padX + chartW, targetY, 5 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+
+      // phase label — large, at the right edge of the breath chart
       const phaseColor = seg.phase === 'inhale' ? '#6cc5e6'
                        : seg.phase === 'exhale' ? '#e6b26c' : '#888';
       ctx.fillStyle = phaseColor;
-      ctx.globalAlpha = 0.5;
-      ctx.fillRect(w - padX + 6 * dpr, padTop, 8 * dpr, chartH * 2 + gap);
+      ctx.globalAlpha = paused ? 0.15 : 0.85;
+      ctx.font = `300 ${28 * dpr}px ui-monospace, Menlo, monospace`;
+      ctx.textAlign = 'right';
+      ctx.fillText(seg.phase, padX + chartW - 12 * dpr, brTop + 36 * dpr);
+      ctx.font = `200 ${48 * dpr}px ui-monospace, Menlo, monospace`;
+      ctx.fillText(Math.ceil(seg.remaining), padX + chartW - 12 * dpr, brTop + 82 * dpr);
       ctx.globalAlpha = 1;
+
+      // paused overlay
+      if (paused) {
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = `${14 * dpr}px ui-monospace, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText('paused — space to resume', w / 2, h - padBot + 20 * dpr);
+      }
+
+      ctx.restore();
 
       const parts = [];
       if (bridge.connected) {

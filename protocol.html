@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>protocol</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #070709; color: #9a9a9a;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    a { color: #9a9a9a; text-decoration: none; }
+    a:hover { color: #fff; }
+
+    #nav { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); font-size: 11px;
+           opacity: 0.45; user-select: none; z-index: 10; }
+    #nav a { margin: 0 8px; }
+
+    .page { padding: 50px 24px 40px; max-width: 1100px; margin: 0 auto; }
+
+    /* trend banner */
+    .trend-banner { padding: 14px 20px; border-radius: 6px; margin-bottom: 20px;
+                    font-size: 13px; display: flex; align-items: center; gap: 12px; }
+    .trend-banner .icon { font-size: 22px; }
+    .trend-banner.improving { background: #0c1a0f; border: 1px solid #1a3a1f; color: #7ee39a; }
+    .trend-banner.declining { background: #1a0c0c; border: 1px solid #3a1a1a; color: #e07a7a; }
+    .trend-banner.stable { background: #12120e; border: 1px solid #2a2a1f; color: #ccc080; }
+    .trend-banner.insufficient { background: #0e0e12; border: 1px solid #1a1a2a; color: #888; }
+
+    /* grid */
+    .grid-2 { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-bottom: 20px; }
+    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .card { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 6px; padding: 16px; }
+    .card h2 { font-size: 12px; color: #555; text-transform: uppercase; letter-spacing: 1px;
+               margin: 0 0 12px; font-weight: normal; }
+
+    .metric { margin-bottom: 10px; }
+    .metric .val { font-size: 28px; color: #fff; font-variant-numeric: tabular-nums; }
+    .metric .lbl { font-size: 10px; color: #555; text-transform: uppercase; }
+    .metric .sub { font-size: 11px; color: #666; }
+
+    /* weekly */
+    .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .day-col { text-align: center; }
+    .day-col .day-label { font-size: 9px; color: #555; }
+    .day-col .day-val { font-size: 16px; color: #fff; font-variant-numeric: tabular-nums; }
+    .day-col .day-sub { font-size: 9px; color: #666; }
+    .day-col svg { display: block; margin: 4px auto; }
+
+    /* monthly chart */
+    #monthly-chart { width: 100%; height: 220px; }
+
+    /* sessions table */
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: #555; font-weight: normal; text-transform: uppercase;
+         font-size: 10px; letter-spacing: 0.5px; padding: 6px 8px; border-bottom: 1px solid #1a1a22; }
+    td { padding: 6px 8px; border-bottom: 1px solid #111; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+    .badge-baseline { background: #1a2a1a; color: #7a7; }
+    .badge-practice { background: #1a1a2a; color: #77a; }
+    .badge-overnight { background: #2a1a2a; color: #a7a; }
+
+    /* tag form */
+    .tag-form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .tag-form select, .tag-form input, .tag-form button {
+      font: 12px ui-monospace, monospace; background: #151518; border: 1px solid #2a2a33;
+      color: #ccc; padding: 6px 10px; border-radius: 3px; }
+    .tag-form button { cursor: pointer; }
+    .tag-form button:hover { border-color: #555; color: #fff; }
+
+    .tag-list { margin-top: 8px; }
+    .tag { display: inline-block; background: #151518; border: 1px solid #222; border-radius: 3px;
+           padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 11px; }
+    .tag .cat { color: #888; }
+
+    .empty { color: #444; font-style: italic; font-size: 12px; }
+    .refresh-btn { position: fixed; top: 14px; right: 20px; font: 11px monospace;
+                   background: none; border: 1px solid #333; color: #666; padding: 3px 10px;
+                   border-radius: 3px; cursor: pointer; z-index: 10; }
+    .refresh-btn:hover { border-color: #666; color: #ccc; }
+  </style>
+</head>
+<body>
+  <div id="nav">
+    <a href="index.html">ribbon</a>
+    <a href="pacer.html">pacer</a>
+    <a href="coherence.html">coherence</a>
+    <a href="heartbeat.html">heartbeat</a>
+    <a href="hrv-dashboard.html">hrv-lights</a>
+    <span style="color:#fff;opacity:0.9;margin:0 8px">protocol</span>
+  </div>
+  <button class="refresh-btn" onclick="init()">refresh</button>
+
+  <div class="page">
+    <div id="trend-banner" class="trend-banner insufficient">
+      <span class="icon">—</span>
+      <span id="trend-text">loading…</span>
+    </div>
+
+    <div class="grid-2">
+      <!-- LEFT: today -->
+      <div>
+        <div class="card" id="today-card">
+          <h2>today</h2>
+          <div id="today-content"><span class="empty">loading…</span></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>context tags</h2>
+          <div id="tags-content"></div>
+          <div class="tag-form">
+            <select id="tag-cat">
+              <option value="substance">substance</option>
+              <option value="exercise">exercise</option>
+              <option value="sleep_quality">sleep (1-5)</option>
+              <option value="mood">mood (1-5)</option>
+              <option value="note">note</option>
+            </select>
+            <input id="tag-val" placeholder="value" style="width:100px">
+            <input id="tag-note" placeholder="note (optional)" style="flex:1;min-width:120px">
+            <button onclick="submitTag()">add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: weekly -->
+      <div class="card" id="weekly-card">
+        <h2>weekly trend</h2>
+        <div id="weekly-content"><span class="empty">loading…</span></div>
+      </div>
+    </div>
+
+    <!-- monthly -->
+    <div class="card">
+      <h2>30-day trend</h2>
+      <canvas id="monthly-chart"></canvas>
+    </div>
+
+    <!-- sessions -->
+    <div class="card" style="margin-top:16px">
+      <h2>session log</h2>
+      <div id="sessions-content"><span class="empty">loading…</span></div>
+    </div>
+  </div>
+
+  <script>
+    const API = 'http://localhost:8090/api';
+
+    async function get(path) {
+      try { return await (await fetch(API + path)).json(); }
+      catch(e) { return null; }
+    }
+    async function post(path, body) {
+      return fetch(API + path, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+    }
+
+    function fmt(v, d=1) { return v != null ? Number(v).toFixed(d) : '—'; }
+    function fmtMs(v) { return v != null ? Math.round(v) + 'ms' : '—'; }
+    function fmtDur(s) {
+      if (!s) return '—';
+      if (s > 3600) return (s/3600).toFixed(1) + 'h';
+      return Math.round(s/60) + 'min';
+    }
+    function fmtTime(iso) {
+      if (!iso) return '—';
+      try { return new Date(iso).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'}); }
+      catch(e) { return iso.slice(11,16); }
+    }
+
+    function sparkSvg(values, w=80, h=24, color='#4af') {
+      if (!values || values.length < 2) return '';
+      const mn = Math.min(...values), mx = Math.max(...values);
+      const rng = mx - mn || 1;
+      const pts = values.map((v,i) =>
+        `${(i/(values.length-1))*w},${h - ((v-mn)/rng)*h*0.85 - h*0.05}`
+      ).join(' ');
+      return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>`;
+    }
+
+    // ── render functions ──
+
+    function renderTrend(data) {
+      const el = document.getElementById('trend-banner');
+      const txt = document.getElementById('trend-text');
+      if (!data || data.signal === 'insufficient') {
+        el.className = 'trend-banner insufficient';
+        txt.textContent = `Not enough data yet (${data?.days || 0} days). Need 5+ days to detect a trend.`;
+        return;
+      }
+      el.className = 'trend-banner ' + data.signal;
+      const icons = { improving: '↗', declining: '↘', stable: '→' };
+      el.querySelector('.icon').textContent = icons[data.signal] || '—';
+      const slope = data.slope_per_day > 0 ? '+' : '';
+      txt.textContent = `${data.signal} — RMSSD ${slope}${data.slope_per_day}ms/day over ${data.days} days (${data.first_day} → ${data.last_day})`;
+    }
+
+    function renderDaily(data) {
+      const el = document.getElementById('today-content');
+      if (!data) { el.innerHTML = '<span class="empty">API not running — start protocol_api.py</span>'; return; }
+
+      let html = '';
+
+      if (data.baseline) {
+        html += `<div class="metric"><div class="val">${fmtMs(data.baseline.rmssd_baseline)}</div><div class="lbl">morning baseline</div></div>`;
+      } else {
+        html += '<div class="metric"><div class="val" style="color:#555">no baseline</div><div class="lbl">morning baseline</div><div class="sub">record 5 min resting before coffee</div></div>';
+      }
+
+      if (data.sessions && data.sessions.length > 0) {
+        html += '<div style="margin-top:12px;font-size:11px;color:#555">SESSIONS</div>';
+        for (const s of data.sessions) {
+          html += `<div style="margin:4px 0;font-size:12px">
+            ${fmtTime(s.started_at)} — RMSSD ${fmtMs(s.rmssd_mean)} · HR ${fmt(s.hr_mean,0)} · ${s.sample_count} samples
+          </div>`;
+        }
+      }
+
+      if (data.live_summary) {
+        const ls = data.live_summary;
+        html += `<div style="margin-top:10px;font-size:11px;color:#555">LIVE (JSONL)</div>
+          <div style="font-size:12px">${ls.readings} readings · ${ls.duration_min}min · RMSSD ${ls.rmssd_mean}ms · HR ${ls.hr_mean}</div>`;
+      }
+
+      if (data.stress_events && data.stress_events.length > 0) {
+        html += `<div style="margin-top:10px;font-size:11px;color:#555">STRESS EVENTS: ${data.stress_events.length}</div>`;
+      }
+
+      el.innerHTML = html;
+    }
+
+    function renderWeekly(data) {
+      const el = document.getElementById('weekly-content');
+      if (!data || data.length === 0) {
+        el.innerHTML = '<span class="empty">no weekly data yet</span>';
+        return;
+      }
+
+      const rmssdVals = data.map(d => d.rmssd_mean);
+      const hrVals = data.map(d => d.hr_mean).filter(v => v);
+
+      let html = '<div style="margin-bottom:12px">';
+      html += `<span style="color:#4af">RMSSD</span> ${sparkSvg(rmssdVals, 120, 28, '#4af')} `;
+      if (hrVals.length > 1) html += `<span style="color:#e06a7a;margin-left:16px">HR</span> ${sparkSvg(hrVals, 120, 28, '#e06a7a')}`;
+      html += '</div>';
+
+      html += '<div class="week-grid">';
+      for (const d of data) {
+        const dayName = new Date(d.day + 'T12:00').toLocaleDateString('en', {weekday:'short'});
+        html += `<div class="day-col">
+          <div class="day-label">${dayName}</div>
+          <div class="day-val">${Math.round(d.rmssd_mean)}</div>
+          <div class="day-sub">HR ${d.hr_mean ? Math.round(d.hr_mean) : '—'}</div>
+          <div class="day-sub">${d.n} samples</div>
+        </div>`;
+      }
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    function renderMonthly(data) {
+      const canvas = document.getElementById('monthly-chart');
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.clientWidth * devicePixelRatio;
+      canvas.height = canvas.clientHeight * devicePixelRatio;
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+
+      if (!data || data.length < 2) {
+        ctx.fillStyle = '#444';
+        ctx.font = `${12 * devicePixelRatio}px monospace`;
+        ctx.fillText('not enough data for monthly chart', 20, H/2);
+        return;
+      }
+
+      const pad = { l: 50, r: 20, t: 15, b: 30 };
+      const cw = W - pad.l - pad.r;
+      const ch = H - pad.t - pad.b;
+
+      const rmssd = data.map(d => d.rmssd_mean);
+      const maxV = Math.max(60, ...rmssd) * 1.1;
+      const x = i => pad.l + (i / (data.length - 1)) * cw;
+      const y = v => pad.t + (1 - v / maxV) * ch;
+
+      // y grid
+      ctx.strokeStyle = '#1a1a22';
+      ctx.lineWidth = 1;
+      ctx.font = `${10 * devicePixelRatio}px monospace`;
+      ctx.fillStyle = '#333';
+      ctx.textAlign = 'right';
+      for (let v = 0; v <= maxV; v += 10) {
+        ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(W - pad.r, y(v)); ctx.stroke();
+        ctx.fillText(v.toFixed(0), pad.l - 6, y(v) + 3);
+      }
+
+      // x labels
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#444';
+      const step = Math.max(1, Math.floor(data.length / 8));
+      for (let i = 0; i < data.length; i += step) {
+        const d = data[i].day;
+        ctx.fillText(d.slice(5), x(i), H - pad.b + 14);
+      }
+
+      // area
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = '#4af';
+      ctx.beginPath();
+      ctx.moveTo(x(0), y(0));
+      for (let i = 0; i < data.length; i++) ctx.lineTo(x(i), y(rmssd[i]));
+      ctx.lineTo(x(data.length - 1), y(0));
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // line
+      ctx.strokeStyle = '#4af';
+      ctx.lineWidth = 2.5 * devicePixelRatio;
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) {
+        i === 0 ? ctx.moveTo(x(i), y(rmssd[i])) : ctx.lineTo(x(i), y(rmssd[i]));
+      }
+      ctx.stroke();
+
+      // min/max range
+      ctx.globalAlpha = 0.06;
+      ctx.fillStyle = '#4af';
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) ctx.lineTo(x(i), y(data[i].rmssd_max || rmssd[i]));
+      for (let i = data.length - 1; i >= 0; i--) ctx.lineTo(x(i), y(data[i].rmssd_min || rmssd[i]));
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // current dot
+      const last = data.length - 1;
+      ctx.fillStyle = '#4af';
+      ctx.beginPath();
+      ctx.arc(x(last), y(rmssd[last]), 4 * devicePixelRatio, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${rmssd[last].toFixed(1)}ms`, x(last) + 8, y(rmssd[last]) - 4);
+    }
+
+    function renderSessions(data) {
+      const el = document.getElementById('sessions-content');
+      if (!data || !data.sessions || data.sessions.length === 0) {
+        el.innerHTML = '<span class="empty">no sessions</span>';
+        return;
+      }
+
+      let html = '<table><tr><th>date</th><th>time</th><th>type</th><th>duration</th><th>RMSSD</th><th>range</th><th>HR</th><th>RR</th></tr>';
+      for (const s of data.sessions) {
+        const date = s.started_at ? s.started_at.slice(0, 10) : '—';
+        const time = fmtTime(s.started_at);
+        const badge = `<span class="badge badge-${s.type}">${s.type}</span>`;
+        html += `<tr>
+          <td>${date}</td><td>${time}</td><td>${badge}</td>
+          <td>${fmtDur(s.duration_s)}</td>
+          <td style="color:#fff">${fmtMs(s.rmssd_mean)}</td>
+          <td>${fmtMs(s.rmssd_min)}–${fmtMs(s.rmssd_max)}</td>
+          <td>${fmt(s.hr_mean, 0)}</td>
+          <td style="color:#555">${s.rr_count || '—'}</td>
+        </tr>`;
+      }
+      html += '</table>';
+      el.innerHTML = html;
+    }
+
+    function renderTags(tags) {
+      const el = document.getElementById('tags-content');
+      if (!tags || tags.length === 0) {
+        el.innerHTML = '<span class="empty">no tags today</span>';
+        return;
+      }
+      el.innerHTML = '<div class="tag-list">' + tags.map(t => {
+        const time = new Date(t.ts * 1000).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+        return `<span class="tag"><span class="cat">${t.category}</span> ${t.value || ''}${t.note ? ' — '+t.note : ''} <span style="color:#444">${time}</span></span>`;
+      }).join('') + '</div>';
+    }
+
+    async function submitTag() {
+      const cat = document.getElementById('tag-cat').value;
+      const val = document.getElementById('tag-val').value;
+      const note = document.getElementById('tag-note').value;
+      if (!val && cat !== 'note') return;
+      await post('/tag', { category: cat, value: val || note, note: note });
+      document.getElementById('tag-val').value = '';
+      document.getElementById('tag-note').value = '';
+      const tags = await get('/tags');
+      if (tags) renderTags(tags);
+    }
+
+    async function init() {
+      const [daily, weekly, monthly, sessions, tags, trend] = await Promise.all([
+        get('/daily'), get('/weekly'), get('/monthly'),
+        get('/sessions?limit=30'), get('/tags'), get('/trend')
+      ]);
+      renderTrend(trend);
+      renderDaily(daily);
+      renderWeekly(weekly);
+      renderMonthly(monthly);
+      renderSessions(sessions);
+      renderTags(tags);
+    }
+    init();
+  </script>
+</body>
+</html>

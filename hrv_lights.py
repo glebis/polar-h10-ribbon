@@ -1,40 +1,109 @@
-"""HRV-to-lights daemon. Connects to polar-h10-ribbon WebSocket bridge,
-computes RMSSD trends, and drives Hue + timeBuzzer LEDs organically.
+"""HRV → Lights daemon. Connects to the Polar H10 WebSocket bridge,
+computes rolling RMSSD + trend, and drives Hue + timeBuzzer LEDs.
 
 Run alongside bridge.py:
-    python hrv_lights.py [--hue-group 1] [--no-buzzer] [--dashboard]
+    python hrv_lights.py [--hue-group 82] [--no-buzzer] [--dashboard 8081]
+
+Data is persisted to hrv_log.jsonl for trend analysis across sessions.
 """
-import argparse
 import asyncio
+import argparse
 import colorsys
 import json
 import math
 import os
-import struct
-import subprocess
+import sqlite3
 import sys
 import time
 import urllib.request
-import urllib.error
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
+
+try:
+    import websockets
+except ImportError:
+    sys.exit("websockets required: pip install websockets")
 
 WS_URL = "ws://localhost:8765"
-
 HUE_CONFIG = os.path.expanduser("~/.config/hue/config.json")
-BUZZER_SCRIPT = os.path.expanduser("~/.claude/skills/timebuzzer-led/scripts/buzzer_led.py")
+LOG_FILE = Path(__file__).parent / "hrv_log.jsonl"
+DB_FILE = Path(__file__).parent / "hrv_data.db"
+CONFIG_FILE = Path(__file__).parent / "hrv_lights_config.json"
 
-# --- HRV computation ---
+# ── Configuration ───────────────────────────────────────────────────────
+#
+# Edit hrv_lights_config.json (created on first run) or change defaults here.
+#
+# HOW THE COLORS WORK:
+#   Your RMSSD is mapped to a position between rmssd_low and rmssd_high.
+#   Low RMSSD  (sympathetic / stressed) → cool colors (blue/teal), faster pulse
+#   High RMSSD (parasympathetic / calm)  → warm colors (amber/orange), slow pulse
+#
+#   Movement adds energy: chest motion shifts the color warmer and increases
+#   brightness briefly, so you see a "flash" when you move or gesture.
+
+DEFAULT_CONFIG = {
+    # -- RMSSD range (calibrate to YOUR body) --
+    # These define the full color range. Values outside clip to the ends.
+    "rmssd_low": 8,        # ms — below this is "max stress" (deep blue)
+    "rmssd_high": 35,      # ms — above this is "max calm" (warm amber)
+
+    # -- Color anchors (HSV hue, 0.0-1.0) --
+    "color_calm": 0.08,    # warm amber/orange
+    "color_mid": 0.45,     # teal
+    "color_stress": 0.62,  # deep blue
+
+    # -- Brightness --
+    "brightness_min": 0.20,
+    "brightness_max": 0.65,
+
+    # -- Pulse (breathing rate of the light) --
+    "pulse_bpm_calm": 6,   # slow breathing when relaxed
+    "pulse_bpm_stress": 24,# faster when HRV is low
+
+    # -- Movement reactivity --
+    "movement_enabled": True,
+    "movement_brightness_boost": 0.25,  # how much brighter on movement (0-1)
+    "movement_warmth_shift": 0.06,      # shift hue toward warm on movement
+    "movement_decay": 0.92,             # how fast movement effect fades (0.9=fast, 0.99=slow)
+
+    # -- Smoothing (0.01=very smooth, 0.2=responsive) --
+    "color_smoothing": 0.04,
+    "brightness_smoothing": 0.05,
+    "pulse_smoothing": 0.05,
+}
+
+
+def load_config() -> dict:
+    cfg = DEFAULT_CONFIG.copy()
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                user_cfg = json.load(f)
+            cfg.update(user_cfg)
+        except Exception:
+            pass
+    else:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=2)
+        print(f"config written to {CONFIG_FILE}")
+    return cfg
+
+
+# ── HRV computation ─────────────────────────────────────────────────────
 
 @dataclass
 class HRVState:
     rr_buffer: deque = field(default_factory=lambda: deque(maxlen=60))
-    rmssd_history: deque = field(default_factory=lambda: deque(maxlen=300))
-    timestamps: deque = field(default_factory=lambda: deque(maxlen=300))
-    baseline_rmssd: float = 50.0
-    current_rmssd: float = 50.0
-    trend: float = 0.0  # negative = dropping, positive = rising
-    trend_strength: float = 0.0  # 0..1 how strong the trend is
+    rmssd_history: list = field(default_factory=list)
+    baseline_rmssd: float = 15.0  # adaptive, seeded from DB
+    current_rmssd: float = 23.0
+    current_hr: int = 0
+    trend: float = 0.0
+    trend_strength: float = 0.0
+    movement: float = 0.0         # 0 = still, 1 = strong motion
+    movement_decay: float = 0.92
 
     def add_rr(self, rr_ms: int) -> bool:
         if rr_ms < 200 or rr_ms > 2000:
@@ -45,6 +114,15 @@ class HRVState:
             return True
         return False
 
+    def add_acc(self, samples: list):
+        if not samples:
+            return
+        magnitudes = [math.sqrt(x*x + y*y + z*z) for x, y, z in samples]
+        mean_mag = sum(magnitudes) / len(magnitudes)
+        deviation = abs(mean_mag - 1000) / 1000  # 1g = ~1000 in raw units
+        instant = min(1.0, deviation * 3)
+        self.movement = max(instant, self.movement * self.movement_decay)
+
     def _update_rmssd(self):
         rr = list(self.rr_buffer)
         diffs_sq = [(rr[i+1] - rr[i])**2 for i in range(len(rr)-1)]
@@ -53,147 +131,229 @@ class HRVState:
         rmssd = math.sqrt(sum(diffs_sq) / len(diffs_sq))
         self.current_rmssd = rmssd
         now = time.time()
-        self.rmssd_history.append(rmssd)
-        self.timestamps.append(now)
+        self.rmssd_history.append((now, rmssd))
 
-        # update baseline with slow EMA (adapts over ~5 min)
         alpha = 0.005
         self.baseline_rmssd = self.baseline_rmssd * (1 - alpha) + rmssd * alpha
 
-        # compute trend: slope of RMSSD over last 30 seconds
         self._update_trend(now)
+
+        # trim to last 10 min in memory
+        cutoff = now - 600
+        while self.rmssd_history and self.rmssd_history[0][0] < cutoff:
+            self.rmssd_history.pop(0)
 
     def _update_trend(self, now: float):
         window = 30.0
-        recent_vals = []
-        recent_times = []
-        for t, v in zip(reversed(self.timestamps), reversed(self.rmssd_history)):
-            if now - t > window:
-                break
-            recent_vals.append(v)
-            recent_times.append(t)
-
-        if len(recent_vals) < 4:
+        recent = [(t, v) for t, v in self.rmssd_history if now - t <= window]
+        if len(recent) < 4:
             self.trend = 0.0
             self.trend_strength = 0.0
             return
 
-        # simple linear regression for slope
-        n = len(recent_vals)
-        t_rel = [t - recent_times[-1] for t in recent_times]
-        mean_t = sum(t_rel) / n
-        mean_v = sum(recent_vals) / n
-        num = sum((t - mean_t) * (v - mean_v) for t, v in zip(t_rel, recent_vals))
-        den = sum((t - mean_t)**2 for t in t_rel)
+        n = len(recent)
+        t0 = recent[0][0]
+        ts = [t - t0 for t, _ in recent]
+        vs = [v for _, v in recent]
+        mt = sum(ts) / n
+        mv = sum(vs) / n
+        num = sum((t - mt) * (v - mv) for t, v in zip(ts, vs))
+        den = sum((t - mt)**2 for t in ts)
         if den < 0.001:
             self.trend = 0.0
             self.trend_strength = 0.0
             return
-
-        slope = num / den  # ms of RMSSD per second
-        self.trend = slope
-
-        # normalize strength: ±2 ms/s is "strong"
-        self.trend_strength = min(1.0, abs(slope) / 2.0)
+        self.trend = num / den
+        self.trend_strength = min(1.0, abs(self.trend) / 2.0)
 
     @property
     def relative_hrv(self) -> float:
-        """Current RMSSD relative to baseline. 1.0 = at baseline, <1 = below."""
         if self.baseline_rmssd < 1:
             return 1.0
         return self.current_rmssd / self.baseline_rmssd
 
     @property
     def drop_intensity(self) -> float:
-        """0..1 how much HRV has dropped. 0 = normal/above, 1 = severe drop."""
-        rel = self.relative_hrv
-        if rel >= 1.0:
-            return 0.0
-        # map 0.5..1.0 relative → 1.0..0.0 intensity
-        return min(1.0, (1.0 - rel) * 2.0)
+        # Use absolute RMSSD position within a personal range rather than
+        # ratio to baseline, so the color always has dynamic range.
+        # 3ms = fully dropped, 30ms+ = fully calm
+        low, high = 3.0, 30.0
+        t = (self.current_rmssd - low) / (high - low)
+        return 1.0 - max(0.0, min(1.0, t))
 
 
-# --- Light mapping ---
+# ── Light presets ────────────────────────────────────────────────────────
+#
+# Each preset is a dict defining how HRV maps to light.
+# Cycle with --preset NAME or send {"preset": "name"} via dashboard WS.
+
+PRESETS = {
+    "sleep": {
+        # MacBook sleep indicator. Deep red, barely visible, very slow breath.
+        "name": "sleep",
+        "desc": "dim red breathing — like MacBook sleep light",
+        "calm":   {"h": 0.00, "s": 0.90, "b": 0.12, "pulse": 3.5},
+        "stress": {"h": 0.03, "s": 0.80, "b": 0.20, "pulse": 7.0},
+        "smooth": 0.02,
+    },
+    "candle": {
+        # High HRV = deep red glow. Low HRV = pale amber/yellow.
+        # The redder the room, the calmer you are.
+        "name": "candle",
+        "desc": "redder = calmer — deep red when HRV high, amber when low",
+        "calm":   {"h": 0.00, "s": 0.95, "b": 0.55, "pulse": 4.0},
+        "stress": {"h": 0.09, "s": 0.70, "b": 0.70, "pulse": 14.0},
+        "smooth": 0.06,
+    },
+    "sunset": {
+        # Sunset gradient. Gold when calm, deep pink-red when stressed.
+        "name": "sunset",
+        "desc": "gold → rose — color tells you the state",
+        "calm":   {"h": 0.11, "s": 0.70, "b": 0.50, "pulse": 5.0},
+        "stress": {"h": 0.95, "s": 0.85, "b": 0.65, "pulse": 12.0},
+        "smooth": 0.06,
+    },
+    "ocean": {
+        # Calm teal to stormy blue. Cool palette.
+        "name": "ocean",
+        "desc": "teal → deep blue — cool and clear",
+        "calm":   {"h": 0.48, "s": 0.50, "b": 0.45, "pulse": 5.0},
+        "stress": {"h": 0.62, "s": 0.90, "b": 0.65, "pulse": 16.0},
+        "smooth": 0.06,
+    },
+    "traffic": {
+        # Green → yellow → red. Unmistakable. You always know.
+        "name": "traffic",
+        "desc": "green/yellow/red — impossible to misread",
+        "calm":   {"h": 0.33, "s": 0.80, "b": 0.45, "pulse": 4.0},
+        "stress": {"h": 0.00, "s": 0.90, "b": 0.65, "pulse": 18.0},
+        "smooth": 0.08,
+    },
+}
+
+DEFAULT_PRESET = "candle"
+
+
+# ── Light state mapping ─────────────────────────────────────────────────
 
 @dataclass
 class LightState:
-    hue: float = 0.12  # warm yellow-orange (0..1 hue wheel)
-    saturation: float = 0.6
-    brightness: float = 0.4
-    pulse_bpm: float = 6.0  # breathing rate
+    hue: float = 0.07
+    saturation: float = 0.85
+    brightness: float = 0.30
+    pulse_bpm: float = 4.0
+    preset_name: str = DEFAULT_PRESET
+
+    def set_preset(self, name: str):
+        if name not in PRESETS:
+            return
+        self.preset_name = name
+        p = PRESETS[name]["calm"]
+        self.hue = p["h"]
+        self.saturation = p["s"]
+        self.brightness = p["b"]
+        self.pulse_bpm = p["pulse"]
 
     def update_from_hrv(self, hrv: HRVState):
+        p = PRESETS.get(self.preset_name, PRESETS[DEFAULT_PRESET])
         drop = hrv.drop_intensity
-        trend_down = max(0, -hrv.trend) / 2.0  # 0..1
+        trend_down = max(0, -hrv.trend) / 2.0
+        calm, stress = p["calm"], p["stress"]
+        smooth = p["smooth"]
 
-        # Color: warm amber → cool blue as HRV drops
-        # hue 0.08 (orange) → 0.55 (blue)
-        target_hue = 0.08 + drop * 0.47
-        self.hue += (target_hue - self.hue) * 0.03
+        target_h = calm["h"] + (stress["h"] - calm["h"]) * drop
+        target_s = calm["s"] + (stress["s"] - calm["s"]) * drop
+        target_b = calm["b"] + (stress["b"] - calm["b"]) * drop
+        target_p = calm["pulse"] + (stress["pulse"] - calm["pulse"]) * drop + trend_down * 3.0
 
-        # Saturation increases with drop
-        target_sat = 0.4 + drop * 0.5
-        self.saturation += (target_sat - self.saturation) * 0.05
+        # handle hue wrap (e.g. sunset: 0.11 → 0.95 should go backward)
+        if abs(target_h - self.hue) > 0.5:
+            if target_h > self.hue:
+                target_h -= 1.0
+            else:
+                target_h += 1.0
 
-        # Brightness: slightly brighter on drops (attention)
-        target_bri = 0.3 + drop * 0.35
-        self.brightness += (target_bri - self.brightness) * 0.04
-
-        # Pulse rate: calm 6 BPM → anxious 20 BPM
-        target_bpm = 6.0 + drop * 14.0 + trend_down * 8.0
-        self.pulse_bpm += (target_bpm - self.pulse_bpm) * 0.05
+        self.hue = (self.hue + (target_h - self.hue) * smooth) % 1.0
+        self.saturation += (target_s - self.saturation) * smooth
+        self.brightness += (target_b - self.brightness) * smooth
+        self.pulse_bpm += (target_p - self.pulse_bpm) * smooth
 
     @property
     def rgb(self) -> tuple[int, int, int]:
-        r, g, b = colorsys.hsv_to_rgb(self.hue, self.saturation, self.brightness)
-        return (int(r * 255), int(g * 255), int(b * 255))
+        r, g, b = colorsys.hsv_to_rgb(self.hue % 1.0, self.saturation, self.brightness)
+        return int(r * 255), int(g * 255), int(b * 255)
 
     @property
     def hue_api_values(self) -> dict:
-        """Hue bridge API values (hue: 0-65535, sat: 0-254, bri: 1-254)."""
         return {
-            "hue": int(self.hue * 65535) % 65535,
+            "hue": int((self.hue % 1.0) * 65535),
             "sat": int(self.saturation * 254),
             "bri": max(1, int(self.brightness * 254)),
         }
 
 
-# --- Hue bridge direct API ---
+def pulse_mod(base_bri: float, bpm: float, t: float) -> float:
+    phase = (t * bpm / 60.0) * math.pi * 2
+    wave = (math.sin(phase) + 1) / 2
+    wave = wave * wave
+    # never go below 40% of base — a candle doesn't go dark
+    return base_bri * (0.40 + 0.60 * wave)
+
+
+# ── Hue bridge ──────────────────────────────────────────────────────────
 
 class HueBridge:
-    def __init__(self, group: int = 0):
-        self.group = group
+    def __init__(self, lights: list = None):
+        self.lights = lights or [2, 3, 4]
         self.cfg = None
         self.last_update = 0
-        self.min_interval = 0.8  # bridge rate limit: ~1/s per group
 
     def connect(self) -> bool:
         if not os.path.exists(HUE_CONFIG):
-            print("⚠ Hue config not found — run pair.py first. Hue disabled.")
+            print("hue config not found — disabled")
             return False
         with open(HUE_CONFIG) as f:
             self.cfg = json.load(f)
         try:
             self._api("GET", "/lights")
-            print(f"✓ Hue bridge connected (group {self.group})")
+            print(f"hue bridge connected (lights {self.lights})")
             return True
         except Exception as e:
-            print(f"⚠ Hue bridge unreachable: {e}")
+            print(f"hue bridge unreachable: {e}")
             return False
 
-    def set_state(self, state: dict):
+    def apply_gradient(self, base_state: dict, t: float, pulse_bpm: float):
         now = time.time()
-        if now - self.last_update < self.min_interval:
+        if now - self.last_update < 0.5:
             return
         self.last_update = now
-        path = f"/groups/{self.group}/action"
-        state["on"] = True
-        # use short transition for organic feel (4 = 400ms)
-        state.setdefault("transitiontime", 8)
-        try:
-            self._api("PUT", path, state)
-        except Exception:
-            pass
+
+        n = len(self.lights)
+        for i, lid in enumerate(self.lights):
+            # each light gets a phase offset — creates a ripple/wave
+            offset = i / n
+            phase = (t * pulse_bpm / 60.0 + offset) * math.pi * 2
+            wave = (math.sin(phase) + 1) / 2
+            wave = wave * wave
+
+            # hue shift: each light slightly different, drifting over time
+            hue_spread = 3000
+            hue_drift = int(math.sin(t * 0.03 + i * 1.5) * hue_spread)
+
+            bri = base_state["bri"]
+            mod_bri = int(bri * (0.40 + 0.60 * wave))
+
+            state = {
+                "on": True,
+                "hue": (base_state["hue"] + hue_drift) % 65535,
+                "sat": base_state["sat"],
+                "bri": max(1, mod_bri),
+                "transitiontime": base_state.get("transitiontime", 8),
+            }
+            try:
+                self._api("PUT", f"/lights/{lid}/state", state)
+            except Exception:
+                pass
 
     def _api(self, method, path, body=None):
         url = f"http://{self.cfg['bridge']}/api/{self.cfg['username']}{path}"
@@ -204,257 +364,314 @@ class HueBridge:
             return json.loads(r.read().decode())
 
 
-# --- timeBuzzer direct MIDI ---
+# ── timeBuzzer ──────────────────────────────────────────────────────────
 
 class BuzzerLED:
     def __init__(self):
         self.mo = None
         self.available = False
+        self.last_rgb = (-1, -1, -1)
 
     def connect(self) -> bool:
         try:
             import rtmidi
         except ImportError:
-            print("⚠ python-rtmidi not installed — buzzer disabled.")
+            print("python-rtmidi not installed — buzzer disabled")
             return False
         self.mo = rtmidi.MidiOut()
         for i, name in enumerate(self.mo.get_ports()):
             if "timeBuzzer" in name:
                 self.mo.open_port(i)
                 self.available = True
-                print("✓ timeBuzzer connected")
+                print("timeBuzzer connected")
                 return True
-        print("⚠ timeBuzzer not found — buzzer disabled.")
+        print("timeBuzzer not found — disabled")
         return False
 
     def set_rgb(self, r: int, g: int, b: int):
         if not self.available:
             return
+        rgb = (r, g, b)
+        if rgb == self.last_rgb:
+            return
+        self.last_rgb = rgb
         for seg in range(3):
-            cc_base = 70 + 3 * seg
-            self.mo.send_message([187, cc_base, r // 2])
-            self.mo.send_message([187, cc_base + 1, g // 2])
-            self.mo.send_message([187, cc_base + 2, b // 2])
+            cc = 70 + 3 * seg
+            self.mo.send_message([187, cc, r // 2])
+            self.mo.send_message([187, cc + 1, g // 2])
+            self.mo.send_message([187, cc + 2, b // 2])
+
+    def close(self):
+        if self.available:
+            self.set_rgb(0, 0, 0)
+            self.mo.close_port()
 
 
-# --- Pulse modulation ---
+# ── Data persistence ────────────────────────────────────────────────────
 
-def pulse_brightness(base_bri: float, bpm: float, t: float, min_factor=0.6) -> float:
-    """Sinusoidal breathing modulation."""
-    phase = (t * bpm / 60.0) * math.pi * 2
-    wave = (math.sin(phase) + 1) / 2  # 0..1
-    return base_bri * (min_factor + (1 - min_factor) * wave)
-
-
-# --- Dashboard (optional tiny HTTP server) ---
-
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>HRV → Lights</title>
-<style>
-html,body{margin:0;background:#0a0a0c;color:#aaa;font:13px/1.6 ui-monospace,monospace}
-.wrap{padding:20px;max-width:900px}
-h1{font-size:16px;color:#fff;margin:0 0 12px}
-canvas{width:100%;height:200px;border:1px solid #222;border-radius:4px;margin:8px 0}
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0}
-.m{background:#111;padding:10px 12px;border-radius:4px}
-.m .val{font-size:22px;color:#fff;font-variant-numeric:tabular-nums}
-.m .lbl{font-size:11px;color:#666}
-.swatch{width:40px;height:40px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:12px;
-  box-shadow:0 0 20px var(--glow)}
-</style></head><body><div class="wrap">
-<h1>HRV → Lights</h1>
-<div class="metrics">
-  <div class="m"><div class="val" id="rmssd">—</div><div class="lbl">RMSSD ms</div></div>
-  <div class="m"><div class="val" id="trend">—</div><div class="lbl">trend ms/s</div></div>
-  <div class="m"><div class="val" id="drop">—</div><div class="lbl">drop intensity</div></div>
-  <div class="m"><div class="val" id="bpm">—</div><div class="lbl">pulse BPM</div></div>
-  <div class="m"><div class="swatch" id="swatch"></div><span id="hex">#000</span></div>
-</div>
-<canvas id="chart"></canvas>
-</div>
-<script>
-const canvas=document.getElementById('chart'),ctx=canvas.getContext('2d');
-let data=[];
-function resize(){canvas.width=canvas.clientWidth*2;canvas.height=canvas.clientHeight*2;draw()}
-window.addEventListener('resize',resize);resize();
-function draw(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(data.length<2)return;
-  const maxV=Math.max(120,...data.map(d=>d.rmssd));
-  ctx.strokeStyle='#4af';ctx.lineWidth=2;ctx.beginPath();
-  data.forEach((d,i)=>{
-    const x=i/(data.length-1)*canvas.width;
-    const y=(1-d.rmssd/maxV)*canvas.height*0.9+canvas.height*0.05;
-    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
-  });
-  ctx.stroke();
-  // baseline
-  if(data.length>0){
-    const bl=data[data.length-1].baseline;
-    const y=(1-bl/maxV)*canvas.height*0.9+canvas.height*0.05;
-    ctx.strokeStyle='#555';ctx.setLineDash([4,4]);ctx.beginPath();
-    ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();ctx.setLineDash([]);
-  }
-}
-
-const es=new EventSource('/events');
-es.onmessage=e=>{
-  const d=JSON.parse(e.data);
-  data.push(d);if(data.length>300)data.shift();
-  document.getElementById('rmssd').textContent=d.rmssd.toFixed(1);
-  document.getElementById('trend').textContent=(d.trend>=0?'+':'')+d.trend.toFixed(2);
-  document.getElementById('drop').textContent=(d.drop*100).toFixed(0)+'%';
-  document.getElementById('bpm').textContent=d.pulse_bpm.toFixed(1);
-  const sw=document.getElementById('swatch');
-  sw.style.background=d.hex;sw.style.setProperty('--glow',d.hex);
-  document.getElementById('hex').textContent=d.hex;
-  draw();
-};
-</script></body></html>"""
+def load_baseline_from_db() -> tuple[float, int]:
+    """Load baseline RMSSD from SQLite hrv_samples across all sessions.
+    Returns (baseline_rmssd, sample_count).
+    """
+    if not DB_FILE.exists():
+        return 23.0, 0
+    try:
+        conn = sqlite3.connect(str(DB_FILE))
+        cur = conn.execute(
+            "SELECT AVG(rmssd), COUNT(*) FROM hrv_samples "
+            "WHERE rmssd > 5 AND rmssd < 200"
+        )
+        avg, cnt = cur.fetchone()
+        conn.close()
+        if avg and cnt > 0:
+            return avg, cnt
+    except Exception:
+        pass
+    return 23.0, 0
 
 
-# --- Main loop ---
+def load_history_from_db(max_age_hours: int = 24) -> list[dict]:
+    """Load recent RMSSD history from SQLite for dashboard replay."""
+    if not DB_FILE.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_FILE))
+        cutoff = time.time() - max_age_hours * 3600
+        rows = conn.execute(
+            "SELECT h.ts, h.rmssd, h.baseline_rmssd, h.hr_mean, h.trend_slope "
+            "FROM hrv_samples h WHERE h.ts > ? ORDER BY h.ts",
+            (cutoff,)
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "ts": r[0], "rmssd": round(r[1], 1),
+                "baseline": round(r[2] or 23, 1),
+                "hr": int(r[3] or 0),
+                "trend": round(r[4] or 0, 3),
+                "drop": 0, "hex": "#997744", "pulse_bpm": 6,
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+def load_history(max_age_hours: int = 24) -> list[dict]:
+    """Load from SQLite first, fall back to JSONL."""
+    db_hist = load_history_from_db(max_age_hours)
+    if db_hist:
+        return db_hist
+    if not LOG_FILE.exists():
+        return []
+    cutoff = time.time() - max_age_hours * 3600
+    rows = []
+    for line in LOG_FILE.read_text().splitlines():
+        try:
+            row = json.loads(line)
+            if row.get("ts", 0) > cutoff:
+                rows.append(row)
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def append_log(row: dict):
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+# ── Dashboard WebSocket ─────────────────────────────────────────────────
+
+dash_clients: set = set()
+_light_ref: list = [None]  # mutable ref for preset switching from dashboard
+
+
+async def dash_handler(ws):
+    dash_clients.add(ws)
+    try:
+        # send preset list + historical data on connect
+        await ws.send(json.dumps({
+            "type": "presets",
+            "presets": {k: v["desc"] for k, v in PRESETS.items()},
+            "active": _light_ref[0].preset_name if _light_ref[0] else DEFAULT_PRESET,
+        }))
+        hist = load_history()
+        if hist:
+            await ws.send(json.dumps({"type": "history", "data": hist[-300:]}))
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+                if msg.get("cmd") == "preset" and _light_ref[0]:
+                    _light_ref[0].set_preset(msg["name"])
+                    print(f"\n  preset → {msg['name']}")
+                    await dash_broadcast({"type": "preset_changed", "name": msg["name"]})
+            except Exception:
+                pass
+    finally:
+        dash_clients.discard(ws)
+
+
+async def dash_broadcast(msg: dict):
+    if not dash_clients:
+        return
+    payload = json.dumps(msg)
+    dead = []
+    for ws in dash_clients:
+        try:
+            await ws.send(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        dash_clients.discard(ws)
+
+
+# ── Main loop ───────────────────────────────────────────────────────────
 
 async def run(args):
-    import websockets
-
     hrv = HRVState()
     light = LightState()
+    light.set_preset(args.preset)
+    _light_ref[0] = light
 
-    hue = HueBridge(group=args.hue_group)
+    # seed baseline from SQLite (all historical sessions)
+    db_baseline, db_count = load_baseline_from_db()
+    hrv.baseline_rmssd = db_baseline
+    print(f"baseline from {db_count} historical samples: {db_baseline:.1f}ms")
+    print(f"preset: {args.preset} — {PRESETS[args.preset]['desc']}")
+
+    hue = HueBridge(lights=args.hue_lights)
     hue_ok = hue.connect()
 
     buzzer = BuzzerLED()
     buzzer_ok = not args.no_buzzer and buzzer.connect()
 
-    # SSE clients for dashboard
-    sse_clients: set = set()
+    dash_ws = await websockets.serve(dash_handler, "localhost", args.dashboard + 1)
+    print(f"dashboard data: ws://localhost:{args.dashboard + 1}")
+    print(f"dashboard page: http://localhost:{args.dashboard}")
+    print(f"listening on {WS_URL}…\n")
 
-    # Dashboard server
-    if args.dashboard:
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import threading
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == '/':
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html')
-                    self.end_headers()
-                    self.wfile.write(DASHBOARD_HTML.encode())
-                elif self.path == '/events':
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/event-stream')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.end_headers()
-                    q = asyncio.Queue()
-                    sse_clients.add(q)
-                    try:
-                        while True:
-                            # blocking in thread — fine for SSE
-                            import queue as qmod
-                            try:
-                                data = q._queue[0] if q._queue else None
-                            except:
-                                data = None
-                            time.sleep(0.5)
-                    except:
-                        sse_clients.discard(q)
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-            def log_message(self, *a): pass
-
-        # Use a simpler SSE approach with asyncio
-        print(f"Dashboard: http://localhost:{args.dashboard_port}")
-
-    print(f"\nListening on {WS_URL} for RR intervals…")
-    print("Ctrl+C to stop.\n")
-
-    start_time = time.time()
-    last_light_update = 0
-    light_interval = 0.5  # update lights every 500ms
-
-    # SSE broadcast helper
-    async def broadcast_sse(data: dict):
-        # For dashboard we'll write to a shared list
-        pass
+    start_t = time.time()
+    last_light_t = 0
+    last_log_t = 0
 
     while True:
         try:
             async with websockets.connect(WS_URL) as ws:
-                print("✓ Connected to bridge")
+                print("connected to polar bridge")
                 async for raw in ws:
                     msg = json.loads(raw)
-                    if msg.get("type") != "hr":
-                        continue
-                    rr_list = msg.get("rr", [])
-                    for rr in rr_list:
-                        updated = hrv.add_rr(rr)
-                        if not updated:
-                            continue
 
-                        # Update light mapping
-                        light.update_from_hrv(hrv)
+                    if msg.get("type") == "acc":
+                        hrv.add_acc(msg.get("samples", []))
 
-                        now = time.time()
-                        if now - last_light_update < light_interval:
-                            continue
-                        last_light_update = now
+                    if msg.get("type") == "hr":
+                        hrv.current_hr = msg["bpm"]
+                        for rr in msg.get("rr", []):
+                            if not hrv.add_rr(rr):
+                                continue
 
-                        # Apply pulse modulation
-                        t = now - start_time
-                        modulated_bri = pulse_brightness(
-                            light.brightness, light.pulse_bpm, t
-                        )
+                            light.update_from_hrv(hrv)
+                            now = time.time()
+                            if now - last_light_t < 0.5:
+                                continue
+                            last_light_t = now
 
-                        # Drive Hue
-                        if hue_ok:
-                            vals = light.hue_api_values
-                            vals["bri"] = max(1, int(modulated_bri * 254))
-                            # longer transition when calm, shorter when dropping
-                            vals["transitiontime"] = max(2, int(8 - hrv.drop_intensity * 5))
-                            hue.set_state(vals)
+                            t = now - start_t
+                            mv = hrv.movement
 
-                        # Drive buzzer
-                        if buzzer_ok:
+                            if hue_ok:
+                                vals = light.hue_api_values
+                                # movement makes transitions snappier
+                                vals["transitiontime"] = max(3, 8 - int(mv * 4))
+                                # movement boosts brightness
+                                if mv > 0.05:
+                                    vals["bri"] = min(254, vals["bri"] + int(mv * 60))
+                                hue.apply_gradient(vals, t, light.pulse_bpm)
+
+                            # buzzer: use pulse_mod for its own breathing
+                            mod_bri = pulse_mod(light.brightness, light.pulse_bpm, t)
+                            if mv > 0.05:
+                                mod_bri = min(0.95, mod_bri + mv * 0.15)
+
+                            if buzzer_ok:
+                                r, g, b = light.rgb
+                                mod = mod_bri / max(0.01, light.brightness)
+                                # buzzer LEDs need higher minimum to be visible
+                                br, bg, bb = int(r * mod), int(g * mod), int(b * mod)
+                                bmax = max(br, bg, bb, 1)
+                                if bmax < 40:
+                                    scale = 40 / bmax
+                                    br, bg, bb = int(br * scale), int(bg * scale), int(bb * scale)
+                                buzzer.set_rgb(min(255, br), min(255, bg), min(255, bb))
+
                             r, g, b = light.rgb
-                            mod = modulated_bri / max(0.01, light.brightness)
-                            buzzer.set_rgb(
-                                int(r * mod), int(g * mod), int(b * mod)
+                            hex_c = f"#{r:02x}{g:02x}{b:02x}"
+                            arrow = "↗" if hrv.trend > 0.3 else "↘" if hrv.trend < -0.3 else "→"
+
+                            row = {
+                                "ts": now,
+                                "hr": hrv.current_hr,
+                                "rmssd": round(hrv.current_rmssd, 1),
+                                "baseline": round(hrv.baseline_rmssd, 1),
+                                "trend": round(hrv.trend, 3),
+                                "drop": round(hrv.drop_intensity, 3),
+                                "hex": hex_c,
+                                "pulse_bpm": round(light.pulse_bpm, 1),
+                                "movement": round(hrv.movement, 3),
+                                "preset": light.preset_name,
+                            }
+
+                            await dash_broadcast({"type": "tick", **row})
+
+                            if now - last_log_t >= 5:
+                                last_log_t = now
+                                append_log(row)
+
+                            mv_bar = "█" * int(mv * 10) if mv > 0.05 else ""
+                            print(
+                                f"\r  [{light.preset_name}] hr={hrv.current_hr}  "
+                                f"rmssd={hrv.current_rmssd:5.1f}ms  "
+                                f"{arrow} {hrv.trend:+.2f}ms/s  "
+                                f"drop={hrv.drop_intensity*100:3.0f}%  "
+                                f"pulse={light.pulse_bpm:4.1f}bpm  "
+                                f"{hex_c}  {mv_bar}",
+                                end="   \x1b[K", flush=True
                             )
 
-                        # Console output
-                        r, g, b = light.rgb
-                        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-                        trend_arrow = "↗" if hrv.trend > 0.3 else "↘" if hrv.trend < -0.3 else "→"
-                        print(
-                            f"\r  RMSSD {hrv.current_rmssd:5.1f}ms  "
-                            f"{trend_arrow} {hrv.trend:+.2f}ms/s  "
-                            f"drop {hrv.drop_intensity*100:3.0f}%  "
-                            f"pulse {light.pulse_bpm:4.1f}bpm  "
-                            f"{hex_color}  ",
-                            end="", flush=True
-                        )
-
-        except ConnectionRefusedError:
-            print("Bridge not running. Retrying in 3s…")
+        except (ConnectionRefusedError, OSError):
+            print("\rpolar bridge not running, retrying in 3s…", end="", flush=True)
             await asyncio.sleep(3)
-        except Exception as e:
-            print(f"\nConnection lost ({e}). Reconnecting in 2s…")
-            await asyncio.sleep(2)
+        except websockets.ConnectionClosed:
+            print("\nbridge disconnected, reconnecting…")
+            await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            break
+
+    if buzzer_ok:
+        buzzer.close()
+    dash_ws.close()
+    await dash_ws.wait_closed()
+    print("\nshutdown.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="HRV → Lights daemon")
-    parser.add_argument("--hue-group", type=int, default=0,
-                        help="Hue group/room id (0=all)")
-    parser.add_argument("--no-buzzer", action="store_true",
-                        help="Disable timeBuzzer")
-    parser.add_argument("--dashboard", action="store_true",
-                        help="Serve trend dashboard")
-    parser.add_argument("--dashboard-port", type=int, default=8081)
+    parser = argparse.ArgumentParser(
+        description="HRV → Lights daemon",
+        epilog="Presets: " + ", ".join(f"{k} ({v['desc']})" for k, v in PRESETS.items()))
+    parser.add_argument("--hue-lights", type=int, nargs="+", default=[2, 3, 4],
+                        help="Hue light IDs to control (default: 2 3 4)")
+    parser.add_argument("--no-buzzer", action="store_true")
+    parser.add_argument("--preset", default=DEFAULT_PRESET,
+                        choices=list(PRESETS.keys()),
+                        help=f"Light preset (default: {DEFAULT_PRESET})")
+    parser.add_argument("--dashboard", type=int, default=8081,
+                        help="Dashboard HTTP port (WebSocket on port+1)")
     args = parser.parse_args()
+
+    print(f"hrv-lights · hue lights {args.hue_lights} · "
+          f"buzzer {'off' if args.no_buzzer else 'on'}")
+
     asyncio.run(run(args))
 
 
