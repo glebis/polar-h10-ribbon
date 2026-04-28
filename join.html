@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+  <title>Join Session</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #050505; color: #ccc;
+                 font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+    .page { max-width: 480px; margin: 0 auto; padding: 40px 20px; min-height: 100%; }
+
+    h1 { font-size: 20px; font-weight: 300; color: #fff; text-align: center; margin-bottom: 6px; }
+    .sub { text-align: center; font-size: 11px; color: #555; margin-bottom: 30px; }
+
+    .name-input { display: block; width: 100%; font: 16px monospace; background: #111;
+                  border: 1px solid #2a2a2a; color: #fff; padding: 12px 16px; border-radius: 6px;
+                  margin-bottom: 20px; outline: none; text-align: center; }
+    .name-input:focus { border-color: #555; }
+    .name-input::placeholder { color: #333; }
+
+    .methods { display: flex; flex-direction: column; gap: 12px; }
+    .method { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 8px;
+              padding: 16px; cursor: pointer; transition: border-color 0.2s;
+              display: flex; gap: 14px; align-items: center; }
+    .method:hover { border-color: #444; }
+    .method:active { border-color: #666; }
+    .method .icon { font-size: 28px; width: 44px; text-align: center; flex-shrink: 0; }
+    .method h2 { font-size: 14px; color: #ddd; font-weight: normal; margin-bottom: 3px; }
+    .method p { font-size: 11px; color: #666; line-height: 1.4; }
+
+    /* live state */
+    .live { display: none; text-align: center; padding-top: 40px; }
+    .live .my-hr { font-size: 72px; font-weight: 200; color: #fff;
+                   font-variant-numeric: tabular-nums; transition: color 0.3s; }
+    .live .my-label { font-size: 12px; color: #555; }
+    .live .my-name { font-size: 14px; color: #888; margin-bottom: 20px; }
+
+    .tap-area { width: 200px; height: 200px; border-radius: 50%; margin: 20px auto;
+                background: #111; border: 2px solid #2a2a2a; display: flex;
+                align-items: center; justify-content: center; font-size: 14px; color: #555;
+                cursor: pointer; transition: all 0.1s; user-select: none;
+                -webkit-user-select: none; -webkit-touch-callout: none; }
+    .tap-area:active { background: #1a1a22; border-color: #e06a7a; transform: scale(0.95); }
+    .tap-area.beat { background: rgba(224,106,122,0.15); border-color: #e06a7a; }
+
+    .camera-mini { width: 160px; height: 120px; border-radius: 8px; margin: 16px auto;
+                   overflow: hidden; background: #111; }
+    .camera-mini video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+
+    .participants { margin-top: 30px; font-size: 12px; }
+    .participants .p-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+    .participants .p-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .participants .p-hr { color: #fff; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+
+    .view-link { text-align: center; margin-top: 24px; }
+    .view-link a { color: #555; font-size: 11px; text-decoration: none; }
+    .view-link a:hover { color: #aaa; }
+
+    .status { text-align: center; font-size: 11px; color: #333; margin-top: 16px; }
+  </style>
+</head>
+<body>
+<div class="page">
+  <div id="setup">
+    <h1>heartbeat</h1>
+    <div class="sub">join the live session</div>
+
+    <input class="name-input" id="name" placeholder="your name" autocomplete="off" maxlength="20">
+
+    <div class="methods">
+      <div class="method" onclick="joinWithTap()">
+        <div class="icon">👆</div>
+        <div>
+          <h2>Tap to Beat</h2>
+          <p>Tap the screen in rhythm with your pulse. Works on any device, no hardware needed.</p>
+        </div>
+      </div>
+      <div class="method" onclick="joinWithCamera()">
+        <div class="icon">📷</div>
+        <div>
+          <h2>Camera</h2>
+          <p>Measures heart rate from your face. Keep still, good lighting. Takes 10 seconds to lock on.</p>
+        </div>
+      </div>
+      <div class="method" onclick="joinWithStrap()">
+        <div class="icon">📟</div>
+        <div>
+          <h2>Polar H10 Strap</h2>
+          <p>Connects via the local bridge. Most accurate. Requires bridge.py running.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="live" id="live">
+    <div class="my-name" id="my-name"></div>
+    <div class="my-hr" id="my-hr">—</div>
+    <div class="my-label">bpm</div>
+
+    <div id="tap-zone" style="display:none">
+      <div class="tap-area" id="tap-area" ontouchstart="onTap(event)" onmousedown="onTap(event)">
+        tap your pulse
+      </div>
+    </div>
+
+    <div id="camera-zone" style="display:none">
+      <div class="camera-mini"><video id="cam-video" playsinline autoplay muted></video></div>
+    </div>
+
+    <div class="participants" id="participants"></div>
+
+    <div class="view-link">
+      <a href="multiplayer.html" target="_blank">open full visualization →</a>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+</div>
+
+<canvas id="cam-canvas" width="160" height="120" style="display:none"></canvas>
+
+<script>
+  const RELAY_URL = `ws://${location.hostname}:9000`;
+  let ws = null;
+  let myName = '';
+  let inputMode = '';
+  let myHR = 0;
+
+  // ── Relay connection ──
+  function connectRelay(name) {
+    ws = new WebSocket(RELAY_URL);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'join', name }));
+      document.getElementById('status').textContent = 'connected';
+    };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'joined') {
+        document.getElementById('my-name').textContent = msg.name;
+        document.getElementById('my-name').style.color = msg.color;
+      }
+      if (msg.type === 'state') {
+        renderParticipants(msg.participants, msg.sync);
+      }
+    };
+    ws.onclose = () => {
+      document.getElementById('status').textContent = 'disconnected — reconnecting…';
+      setTimeout(() => connectRelay(name), 2000);
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  function sendHR(bpm, rr) {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'hr', bpm, rr: rr || [] }));
+    }
+    myHR = bpm;
+    const el = document.getElementById('my-hr');
+    el.textContent = bpm;
+    el.style.color = '#fff';
+    setTimeout(() => el.style.color = '#fff', 100);
+  }
+
+  function renderParticipants(participants, sync) {
+    const el = document.getElementById('participants');
+    const entries = Object.values(participants);
+    if (entries.length < 2) {
+      el.innerHTML = '<div style="color:#333;text-align:center">waiting for others to join…</div>';
+      return;
+    }
+    let html = `<div style="text-align:center;color:#555;margin-bottom:8px">sync: ${(sync*100).toFixed(0)}% · ${entries.length} people</div>`;
+    for (const p of entries) {
+      html += `<div class="p-row">
+        <div class="p-dot" style="background:${p.color}"></div>
+        <span>${p.name}</span>
+        <span class="p-hr">${p.bpm}</span>
+      </div>`;
+    }
+    el.innerHTML = html;
+  }
+
+  function startLive() {
+    myName = document.getElementById('name').value.trim() || 'anonymous';
+    document.getElementById('setup').style.display = 'none';
+    document.getElementById('live').style.display = 'block';
+    connectRelay(myName);
+  }
+
+  // ── TAP TO BEAT ──
+  const tapTimes = [];
+
+  function joinWithTap() {
+    inputMode = 'tap';
+    startLive();
+    document.getElementById('tap-zone').style.display = 'block';
+  }
+
+  function onTap(e) {
+    e.preventDefault();
+    const now = performance.now();
+    tapTimes.push(now);
+    if (tapTimes.length > 10) tapTimes.shift();
+
+    // visual beat
+    const area = document.getElementById('tap-area');
+    area.classList.add('beat');
+    setTimeout(() => area.classList.remove('beat'), 150);
+
+    if (tapTimes.length >= 3) {
+      const intervals = [];
+      for (let i = 1; i < tapTimes.length; i++) {
+        const d = tapTimes[i] - tapTimes[i-1];
+        if (d > 300 && d < 2000) intervals.push(d);
+      }
+      if (intervals.length >= 2) {
+        const avg = intervals.reduce((a,b) => a+b, 0) / intervals.length;
+        const bpm = Math.round(60000 / avg);
+        if (bpm > 40 && bpm < 180) {
+          sendHR(bpm, [Math.round(avg)]);
+        }
+      }
+    }
+  }
+
+  // ── CAMERA HR ──
+  const camVideo = document.getElementById('cam-video');
+  const camCanvas = document.getElementById('cam-canvas');
+  const camCtx = camCanvas.getContext('2d', { willReadFrequently: true });
+
+  const greenBuf = [];
+  const filtBuf = [];
+  const xH = [0,0,0,0,0], yH = [0,0,0,0,0];
+  const B = [0.2066, 0, -0.4131, 0, 0.2066];
+  const A = [1, -1.3073, 1.1410, -0.5693, 0.1638];
+  let camFrameCount = 0;
+  let lastCamFrame = 0;
+
+  function bandpass(s) {
+    xH.pop(); xH.unshift(s);
+    let y = 0;
+    for (let i = 0; i < B.length; i++) y += B[i] * xH[i];
+    for (let i = 1; i < A.length; i++) y -= A[i] * yH[i-1];
+    yH.pop(); yH.unshift(y);
+    return y;
+  }
+
+  async function joinWithCamera() {
+    inputMode = 'camera';
+    startLive();
+    document.getElementById('camera-zone').style.display = 'block';
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: 160, height: 120, frameRate: 30 }
+      });
+      camVideo.srcObject = stream;
+      document.getElementById('status').textContent = 'camera active — keep still';
+      requestAnimationFrame(camFrame);
+    } catch (e) {
+      document.getElementById('status').textContent = 'camera denied: ' + e.message;
+    }
+  }
+
+  function camFrame(time) {
+    if (inputMode !== 'camera') return;
+    const now = time / 1000;
+    if (now - lastCamFrame < 1/30) { requestAnimationFrame(camFrame); return; }
+    lastCamFrame = now;
+    camFrameCount++;
+
+    camCtx.drawImage(camVideo, 0, 0, 160, 120);
+    // ROI: forehead area center
+    const d = camCtx.getImageData(50, 20, 60, 40);
+    let gSum = 0;
+    for (let i = 0; i < d.data.length; i += 4) gSum += d.data[i+1];
+    const gMean = gSum / (d.data.length / 4);
+    greenBuf.push(gMean);
+    if (greenBuf.length > 450) greenBuf.shift();
+
+    filtBuf.push(bandpass(gMean));
+    if (filtBuf.length > 450) filtBuf.shift();
+
+    if (camFrameCount % 15 === 0 && filtBuf.length > 150) {
+      const recent = filtBuf.slice(-300);
+      // peak detection
+      const peaks = [];
+      for (let i = 2; i < recent.length - 2; i++) {
+        if (recent[i] > recent[i-1] && recent[i] > recent[i-2] &&
+            recent[i] > recent[i+1] && recent[i] > recent[i+2]) {
+          const local = recent.slice(Math.max(0,i-15), i+15);
+          const mean = local.reduce((a,b) => a+Math.abs(b), 0) / local.length;
+          if (Math.abs(recent[i]) > mean * 0.5) peaks.push(i);
+        }
+      }
+      if (peaks.length >= 3) {
+        const ivls = [];
+        for (let i = 1; i < peaks.length; i++) {
+          const d = (peaks[i] - peaks[i-1]) / 30;
+          if (d > 0.33 && d < 1.5) ivls.push(d);
+        }
+        if (ivls.length >= 2) {
+          const mean = ivls.reduce((a,b) => a+b, 0) / ivls.length;
+          const bpm = Math.round(60 / mean);
+          if (bpm > 40 && bpm < 180) sendHR(bpm, [Math.round(mean * 1000)]);
+        }
+      }
+    }
+    requestAnimationFrame(camFrame);
+  }
+
+  // ── POLAR H10 STRAP ──
+  function joinWithStrap() {
+    inputMode = 'strap';
+    startLive();
+    document.getElementById('status').textContent = 'connecting to strap bridge…';
+    connectStrap();
+  }
+
+  function connectStrap() {
+    try {
+      const bws = new WebSocket('ws://localhost:8765');
+      bws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        if (d.type === 'hr' && d.bpm) {
+          sendHR(d.bpm, d.rr || []);
+        }
+      };
+      bws.onopen = () => {
+        document.getElementById('status').textContent = 'strap connected';
+      };
+      bws.onclose = () => setTimeout(connectStrap, 3000);
+      bws.onerror = () => {};
+    } catch(e) {}
+  }
+
+  // auto-focus name input
+  document.getElementById('name').focus();
+  document.getElementById('name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.querySelector('.method').click();
+  });
+</script>
+</body>
+</html>
