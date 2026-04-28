@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HRV Assessment</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; overflow-y: auto;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9a9a9a; }
+    .page { max-width: 700px; margin: 0 auto; padding: 60px 24px; }
+
+    #nav { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); font-size: 11px;
+           opacity: 0.45; user-select: none; z-index: 10; }
+    #nav a { color: inherit; text-decoration: none; margin: 0 8px; }
+    #nav a:hover { color: #fff; }
+
+    .hero { text-align: center; margin-bottom: 40px; }
+    .hero h1 { font-size: 18px; color: #fff; font-weight: normal; margin: 0; }
+    .hero .sub { font-size: 12px; color: #555; margin-top: 6px; }
+
+    .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 30px; }
+    .mode-card { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 8px; padding: 18px;
+                 cursor: pointer; transition: border-color 0.2s; }
+    .mode-card:hover { border-color: #444; }
+    .mode-card.active { border-color: #e6b26c; }
+    .mode-card h2 { font-size: 14px; color: #ddd; margin: 0 0 6px; font-weight: normal; }
+    .mode-card p { font-size: 11px; color: #666; margin: 0; line-height: 1.5; }
+    .mode-card .dur { font-size: 10px; color: #555; margin-top: 8px; }
+
+    .phase-display { text-align: center; margin: 30px 0; }
+    .phase-display .phase-name { font-size: 28px; color: #fff; font-weight: 200; }
+    .phase-display .phase-instruction { font-size: 14px; color: #888; margin-top: 8px; line-height: 1.6; }
+    .phase-display .phase-timer { font-size: 48px; color: #fff; font-weight: 200;
+                                   font-variant-numeric: tabular-nums; margin-top: 12px; }
+    .phase-display .phase-hr { font-size: 22px; color: #e06a7a; margin-top: 8px; }
+
+    .metrics-row { display: flex; gap: 16px; justify-content: center; margin: 16px 0; flex-wrap: wrap; }
+    .metric-pill { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 20px;
+                   padding: 6px 14px; font-size: 11px; }
+    .metric-pill .mv { color: #fff; font-variant-numeric: tabular-nums; }
+    .metric-pill .ml { color: #555; }
+
+    .progress-bar { height: 3px; background: #1a1a22; border-radius: 2px; margin: 20px 0; }
+    .progress-bar .fill { height: 100%; background: #e6b26c; border-radius: 2px; transition: width 0.5s; }
+
+    #start-btn { display: block; margin: 30px auto; font: 16px monospace; background: #1a2a1a;
+                 border: 1px solid #2a4a2a; color: #7a7; padding: 12px 40px; border-radius: 6px;
+                 cursor: pointer; }
+    #start-btn:hover { background: #2a3a2a; color: #afa; }
+    #start-btn:disabled { opacity: 0.3; cursor: default; }
+
+    .results { background: #0e0e12; border: 1px solid #1a1a22; border-radius: 8px; padding: 20px;
+               margin-top: 20px; display: none; }
+    .results h2 { font-size: 14px; color: #fff; margin: 0 0 14px; font-weight: normal; }
+    .results table { width: 100%; font-size: 12px; border-collapse: collapse; }
+    .results td { padding: 4px 8px; border-bottom: 1px solid #111; }
+    .results td:first-child { color: #555; }
+    .results td:last-child { color: #fff; text-align: right; font-variant-numeric: tabular-nums; }
+
+    #status { position: fixed; bottom: 14px; left: 20px; font-size: 11px; opacity: 0.35; }
+
+    .breath-guide { width: 80px; height: 80px; border-radius: 50%; margin: 16px auto;
+                    transition: all 0.3s; border: 2px solid #333; }
+  </style>
+</head>
+<body>
+  <div id="nav">
+    <a href="index.html">ribbon</a>
+    <a href="coherence.html">coherence</a>
+    <a href="heartbeat.html">heartbeat</a>
+    <a href="protocol.html">protocol</a>
+    <span style="color:#fff;opacity:0.9;margin:0 8px">assess</span>
+  </div>
+
+  <div class="page">
+    <div class="hero">
+      <h1>HRV Assessment</h1>
+      <div class="sub">12-minute structured protocol with voice guidance</div>
+    </div>
+
+    <div class="mode-grid">
+      <div class="mode-card active" data-mode="full">
+        <h2>Full Assessment</h2>
+        <p>Baseline → stress task → recovery breathing. Measures resting HRV, stress reactivity, and recovery capacity.</p>
+        <div class="dur">12 min</div>
+      </div>
+      <div class="mode-card" data-mode="baseline">
+        <h2>Morning Baseline</h2>
+        <p>5-minute resting measurement. The primary tracking metric for your protocol.</p>
+        <div class="dur">5 min</div>
+      </div>
+      <div class="mode-card" data-mode="breathing">
+        <h2>Breathing Practice</h2>
+        <p>Guided coherence breathing with real-time score. Choose your pattern.</p>
+        <div class="dur">10–20 min</div>
+      </div>
+      <div class="mode-card" data-mode="recovery">
+        <h2>Recovery Test</h2>
+        <p>Exercise first, then measure how fast your HRV rebounds. Tests parasympathetic reactivation.</p>
+        <div class="dur">8 min</div>
+      </div>
+    </div>
+
+    <button id="start-btn" disabled>connecting…</button>
+
+    <div class="phase-display" id="phase-display" style="display:none">
+      <div class="phase-name" id="phase-name"></div>
+      <div class="phase-instruction" id="phase-instruction"></div>
+      <div class="breath-guide" id="breath-guide" style="display:none"></div>
+      <div class="phase-timer" id="phase-timer">—</div>
+      <div class="phase-hr" id="phase-hr">—</div>
+      <div class="metrics-row" id="metrics-row"></div>
+      <div class="progress-bar"><div class="fill" id="progress-fill" style="width:0"></div></div>
+    </div>
+
+    <div class="results" id="results"></div>
+  </div>
+
+  <div id="status">connecting…</div>
+
+  <script type="module">
+    import { createBridge } from './common.js';
+
+    const bridge = createBridge();
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('start-btn');
+    const phaseDisplay = document.getElementById('phase-display');
+    const phaseName = document.getElementById('phase-name');
+    const phaseInstruction = document.getElementById('phase-instruction');
+    const phaseTimer = document.getElementById('phase-timer');
+    const phaseHR = document.getElementById('phase-hr');
+    const metricsRow = document.getElementById('metrics-row');
+    const progressFill = document.getElementById('progress-fill');
+    const breathGuide = document.getElementById('breath-guide');
+    const resultsEl = document.getElementById('results');
+
+    let selectedMode = 'full';
+    let running = false;
+    let sessionData = [];
+
+    // mode selection
+    document.querySelectorAll('.mode-card').forEach(card => {
+      card.onclick = () => {
+        if (running) return;
+        document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        selectedMode = card.dataset.mode;
+      };
+    });
+
+    // wait for connection
+    const checkConnection = setInterval(() => {
+      if (bridge.connected) {
+        startBtn.disabled = false;
+        startBtn.textContent = 'start assessment';
+        statusEl.textContent = `connected · HR ${bridge.hr}`;
+        clearInterval(checkConnection);
+      }
+    }, 500);
+
+    // voice (queue-based, no overlap)
+    let sayProc = null;
+    function say(text) {
+      // use speech synthesis API for browser
+      if ('speechSynthesis' in window) {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.0;
+        u.pitch = 1.0;
+        speechSynthesis.speak(u);
+      }
+    }
+
+    // RR buffer + RMSSD computation
+    const rrBuf = [];
+    const rmssdHistory = { '5s': [], '30s': [], '60s': [], '180s': [] };
+    let currentRMSSD = 0;
+
+    function computeRMSSD(rrs) {
+      if (rrs.length < 4) return null;
+      let sum = 0;
+      for (let i = 1; i < rrs.length; i++) {
+        const d = rrs[i] - rrs[i - 1];
+        sum += d * d;
+      }
+      return Math.sqrt(sum / (rrs.length - 1));
+    }
+
+    // rolling RMSSD at multiple windows
+    function updateRMSSD() {
+      const now = performance.now() / 1000;
+      for (const [key, secs] of [['5s', 5], ['30s', 30], ['60s', 60], ['180s', 180]]) {
+        const cutoff = now - secs;
+        const recent = rrBuf.filter(r => r.t > cutoff).map(r => r.rr);
+        const val = computeRMSSD(recent);
+        if (val !== null) rmssdHistory[key].push({ t: now, v: val });
+        // trim
+        while (rmssdHistory[key].length > 200) rmssdHistory[key].shift();
+      }
+      const all = rrBuf.slice(-30).map(r => r.rr);
+      currentRMSSD = computeRMSSD(all) || 0;
+    }
+
+    // collect RR from bridge
+    bridge.onRPeak = (t, intensity, rrMs) => {
+      if (rrMs > 250 && rrMs < 1800) {
+        rrBuf.push({ t, rr: rrMs });
+        if (rrBuf.length > 2000) rrBuf.shift();
+        updateRMSSD();
+      }
+    };
+
+    // assessment protocols
+    const protocols = {
+      full: [
+        { name: 'Baseline', duration: 300, instruction: 'Sit quietly. Breathe naturally. Try not to move.', type: 'rest' },
+        { name: 'Stress Task', duration: 180, instruction: 'Count backwards from 1000 by 7. Say each number out loud.\n1000, 993, 986, 979…', type: 'stress' },
+        { name: 'Recovery', duration: 240, instruction: 'Breathe slowly. 5 seconds in, 5 seconds out.\nFollow the guide.', type: 'breathing', pattern: [5, 5] },
+      ],
+      baseline: [
+        { name: 'Resting Baseline', duration: 300, instruction: 'Sit quietly. Breathe naturally.\nThis is your daily measurement.', type: 'rest' },
+      ],
+      breathing: [
+        { name: 'Coherence Breathing', duration: 600, instruction: 'Follow the breathing guide.\n5 seconds in, 5 seconds out.', type: 'breathing', pattern: [5, 5] },
+      ],
+      recovery: [
+        { name: 'Pre-Exercise Baseline', duration: 120, instruction: 'Sit quietly for 2 minutes.\nWe\'ll measure your resting state.', type: 'rest' },
+        { name: 'Exercise', duration: 180, instruction: 'Do intense exercise for 3 minutes.\nBurpees, jumping jacks, or kettlebell swings.', type: 'exercise' },
+        { name: 'Recovery Tracking', duration: 300, instruction: 'Sit down. Breathe normally.\nWe\'re measuring how fast your HRV recovers.', type: 'recovery' },
+      ],
+    };
+
+    // run assessment
+    startBtn.onclick = () => {
+      if (running) return;
+      runAssessment(protocols[selectedMode]);
+    };
+
+    async function runAssessment(phases) {
+      running = true;
+      startBtn.style.display = 'none';
+      document.querySelector('.mode-grid').style.display = 'none';
+      phaseDisplay.style.display = 'block';
+      resultsEl.style.display = 'none';
+      sessionData = [];
+
+      const totalDuration = phases.reduce((s, p) => s + p.duration, 0);
+      let totalElapsed = 0;
+
+      for (let pi = 0; pi < phases.length; pi++) {
+        const phase = phases[pi];
+        say(`${phase.name}. ${phase.instruction.split('\n')[0]}`);
+
+        phaseName.textContent = phase.name;
+        phaseInstruction.textContent = phase.instruction;
+
+        const phaseData = { name: phase.name, type: phase.type, readings: [] };
+        const startTime = performance.now() / 1000;
+        let breathPhase = 0; // 0-1 for breathing guide
+
+        // breathing guide setup
+        if (phase.type === 'breathing' && phase.pattern) {
+          breathGuide.style.display = 'block';
+        } else {
+          breathGuide.style.display = 'none';
+        }
+
+        while (true) {
+          const now = performance.now() / 1000;
+          const elapsed = now - startTime;
+          if (elapsed >= phase.duration) break;
+
+          const remaining = phase.duration - elapsed;
+          const min = Math.floor(remaining / 60);
+          const sec = Math.floor(remaining % 60);
+          phaseTimer.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+          phaseHR.textContent = `${bridge.hr} bpm`;
+          progressFill.style.width = `${(totalElapsed + elapsed) / totalDuration * 100}%`;
+
+          // breathing guide animation
+          if (phase.type === 'breathing' && phase.pattern) {
+            const cycleDuration = phase.pattern[0] + phase.pattern[1];
+            const cyclePos = elapsed % cycleDuration;
+            if (cyclePos < phase.pattern[0]) {
+              breathPhase = cyclePos / phase.pattern[0];
+              breathGuide.style.background = `rgba(108,197,230,${0.1 + breathPhase * 0.3})`;
+            } else {
+              breathPhase = 1 - (cyclePos - phase.pattern[0]) / phase.pattern[1];
+              breathGuide.style.background = `rgba(230,178,108,${0.1 + breathPhase * 0.3})`;
+            }
+            const size = 50 + breathPhase * 50;
+            breathGuide.style.width = size + 'px';
+            breathGuide.style.height = size + 'px';
+          }
+
+          // multi-window metrics
+          const windows = ['5s', '30s', '60s'];
+          let metricsHTML = '';
+          for (const w of windows) {
+            const arr = rmssdHistory[w];
+            const val = arr.length > 0 ? arr[arr.length - 1].v : null;
+            metricsHTML += `<div class="metric-pill"><span class="mv">${val ? val.toFixed(1) : '—'}</span> <span class="ml">RMSSD ${w}</span></div>`;
+          }
+          metricsRow.innerHTML = metricsHTML;
+
+          // record
+          phaseData.readings.push({
+            t: elapsed,
+            hr: bridge.hr,
+            rmssd: currentRMSSD,
+            breath: bridge.breath01,
+          });
+
+          // voice cues at key moments
+          if (Math.abs(remaining - 60) < 0.6) say('One minute remaining.');
+          if (Math.abs(remaining - 30) < 0.6) say('30 seconds.');
+          if (Math.abs(remaining - 10) < 0.6) say('10 seconds.');
+
+          await new Promise(r => setTimeout(r, 500));
+        }
+
+        sessionData.push(phaseData);
+        totalElapsed += phase.duration;
+      }
+
+      say('Assessment complete.');
+      breathGuide.style.display = 'none';
+      showResults();
+      running = false;
+    }
+
+    function showResults() {
+      phaseDisplay.style.display = 'none';
+      resultsEl.style.display = 'block';
+
+      let html = '<h2>Assessment Results</h2>';
+
+      for (const phase of sessionData) {
+        const hrs = phase.readings.map(r => r.hr).filter(h => h > 0);
+        const rmssd = phase.readings.map(r => r.rmssd).filter(r => r > 0);
+
+        html += `<h3 style="color:#888;font-size:12px;margin:16px 0 8px;font-weight:normal">${phase.name} (${phase.type})</h3>`;
+        html += '<table>';
+        if (hrs.length > 0) {
+          html += `<tr><td>HR</td><td>${Math.round(hrs.reduce((a,b)=>a+b,0)/hrs.length)} avg (${Math.min(...hrs)}–${Math.max(...hrs)})</td></tr>`;
+        }
+        if (rmssd.length > 0) {
+          const avg = rmssd.reduce((a,b)=>a+b,0) / rmssd.length;
+          html += `<tr><td>RMSSD</td><td>${avg.toFixed(1)}ms avg (${Math.min(...rmssd).toFixed(1)}–${Math.max(...rmssd).toFixed(1)})</td></tr>`;
+        }
+        html += `<tr><td>Readings</td><td>${phase.readings.length}</td></tr>`;
+        html += '</table>';
+      }
+
+      // cross-phase analysis for full assessment
+      if (sessionData.length >= 3) {
+        const baseline = sessionData[0].readings.map(r => r.rmssd).filter(r => r > 0);
+        const stress = sessionData[1].readings.map(r => r.rmssd).filter(r => r > 0);
+        const recovery = sessionData[2].readings.map(r => r.rmssd).filter(r => r > 0);
+
+        if (baseline.length && stress.length && recovery.length) {
+          const bAvg = baseline.reduce((a,b)=>a+b,0) / baseline.length;
+          const sAvg = stress.reduce((a,b)=>a+b,0) / stress.length;
+          const rAvg = recovery.reduce((a,b)=>a+b,0) / recovery.length;
+          const reactivity = ((bAvg - sAvg) / bAvg * 100);
+          const recoveryPct = ((rAvg - sAvg) / (bAvg - sAvg) * 100);
+
+          html += '<h3 style="color:#e6b26c;font-size:13px;margin:20px 0 10px;font-weight:normal">Autonomic Profile</h3>';
+          html += '<table>';
+          html += `<tr><td>Baseline RMSSD</td><td>${bAvg.toFixed(1)}ms</td></tr>`;
+          html += `<tr><td>Stress RMSSD</td><td>${sAvg.toFixed(1)}ms (${reactivity > 0 ? '-' : '+'}${Math.abs(reactivity).toFixed(0)}%)</td></tr>`;
+          html += `<tr><td>Recovery RMSSD</td><td>${rAvg.toFixed(1)}ms</td></tr>`;
+          html += `<tr><td>Stress reactivity</td><td>${reactivity.toFixed(0)}% drop</td></tr>`;
+          html += `<tr><td>Recovery capacity</td><td>${recoveryPct.toFixed(0)}% of baseline restored</td></tr>`;
+          html += '</table>';
+
+          say(`Baseline RMSSD ${bAvg.toFixed(0)} milliseconds. Stress dropped ${reactivity.toFixed(0)} percent. Recovery restored ${recoveryPct.toFixed(0)} percent.`);
+        }
+      }
+
+      html += '<button onclick="location.reload()" style="margin-top:20px;font:13px monospace;background:#1a1a22;border:1px solid #333;color:#ccc;padding:8px 20px;border-radius:4px;cursor:pointer">new assessment</button>';
+      resultsEl.innerHTML = html;
+
+      startBtn.style.display = 'block';
+      startBtn.textContent = 'start another';
+      document.querySelector('.mode-grid').style.display = 'grid';
+    }
+
+    // status line
+    setInterval(() => {
+      if (bridge.connected) {
+        statusEl.textContent = `connected · HR ${bridge.hr} · RMSSD ${currentRMSSD.toFixed(0)}ms · ${rrBuf.length} RR`;
+      } else {
+        statusEl.textContent = 'disconnected — start bridge.py';
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

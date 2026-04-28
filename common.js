@@ -200,6 +200,7 @@ export function navHTML(current) {
     ['coherence.html', 'coherence'],
     ['hrv-dashboard.html', 'hrv-lights'],
     ['protocol.html', 'protocol'],
+    ['assess.html', 'assess'],
   ];
   return items
     .map(([h, n]) => n === current

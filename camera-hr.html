@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Camera HR</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070709; color: #9a9a9a;
+                 font-family: ui-monospace, Menlo, monospace; }
+    .wrap { max-width: 600px; margin: 0 auto; padding: 50px 20px; text-align: center; }
+    h1 { font-size: 16px; color: #fff; font-weight: normal; }
+    .sub { font-size: 11px; color: #555; margin-bottom: 20px; }
+
+    #video-wrap { position: relative; width: 320px; height: 240px; margin: 0 auto;
+                  background: #111; border-radius: 8px; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+    #roi-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    canvas { display: none; }
+
+    .hr-display { margin: 20px 0; }
+    .hr-display .bpm { font-size: 64px; color: #fff; font-variant-numeric: tabular-nums; font-weight: 200; }
+    .hr-display .label { font-size: 11px; color: #555; }
+    .hr-display .confidence { font-size: 12px; color: #444; }
+
+    .signal-chart { width: 100%; height: 80px; background: #0a0a0e; border-radius: 4px;
+                    margin: 12px 0; }
+
+    #start-btn { font: 14px monospace; background: #1a2a1a; border: 1px solid #2a4a2a;
+                 color: #7a7; padding: 10px 30px; border-radius: 6px; cursor: pointer; margin: 20px 0; }
+    #start-btn:hover { background: #2a3a2a; }
+
+    .status { font-size: 11px; color: #444; margin-top: 12px; }
+    .compare { margin-top: 16px; font-size: 13px; }
+    .compare .strap { color: #e06a7a; }
+    .compare .cam { color: #6cc5e6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Camera Heart Rate</h1>
+    <div class="sub">rPPG — measures pulse from facial skin color changes. Keep still, good lighting.</div>
+
+    <button id="start-btn" onclick="startCamera()">start camera</button>
+
+    <div id="video-wrap" style="display:none">
+      <video id="video" playsinline autoplay muted></video>
+      <svg id="roi-overlay" viewBox="0 0 320 240"></svg>
+    </div>
+    <canvas id="canvas" width="320" height="240"></canvas>
+
+    <div class="hr-display">
+      <div class="bpm" id="cam-bpm">—</div>
+      <div class="label">camera BPM</div>
+      <div class="confidence" id="confidence"></div>
+    </div>
+
+    <svg class="signal-chart" id="signal-chart" viewBox="0 0 400 80"></svg>
+
+    <div class="compare" id="compare" style="display:none">
+      <span class="strap" id="strap-hr">—</span> strap &nbsp;vs&nbsp;
+      <span class="cam" id="cam-hr-compare">—</span> camera &nbsp;
+      <span id="delta" style="color:#555"></span>
+    </div>
+
+    <div class="status" id="status">tap start to begin</div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const bpmEl = document.getElementById('cam-bpm');
+    const confEl = document.getElementById('confidence');
+    const statusEl = document.getElementById('status');
+    const chartSvg = document.getElementById('signal-chart');
+    const compareEl = document.getElementById('compare');
+
+    // signal buffer
+    const SAMPLE_RATE = 30;
+    const BUF_SECONDS = 15;
+    const greenBuf = []; // raw green channel mean
+    const filteredBuf = []; // bandpassed
+    let frameCount = 0;
+    let lastFrameTime = 0;
+    let currentBPM = 0;
+    let measuring = false;
+
+    // face ROI (simple: center rectangle if no face detection)
+    let roiX = 100, roiY = 40, roiW = 120, roiH = 80;
+
+    // ── Bandpass filter (2nd order IIR, 0.75-3.0 Hz at 30fps) ──
+    // Butterworth bandpass coefficients precomputed
+    // These work for fs=30, flo=0.75, fhi=3.0
+    const B = [0.2066, 0, -0.4131, 0, 0.2066];
+    const A = [1, -1.3073, 1.1410, -0.5693, 0.1638];
+    const xHist = [0, 0, 0, 0, 0];
+    const yHist = [0, 0, 0, 0, 0];
+
+    function bandpass(sample) {
+      xHist.pop(); xHist.unshift(sample);
+      let y = 0;
+      for (let i = 0; i < B.length; i++) y += B[i] * xHist[i];
+      for (let i = 1; i < A.length; i++) y -= A[i] * yHist[i - 1];
+      yHist.pop(); yHist.unshift(y);
+      return y;
+    }
+
+    // ── Peak detection ──
+    function detectPeaks(signal) {
+      const peaks = [];
+      for (let i = 2; i < signal.length - 2; i++) {
+        if (signal[i] > signal[i-1] && signal[i] > signal[i-2] &&
+            signal[i] > signal[i+1] && signal[i] > signal[i+2]) {
+          // check amplitude — must be above mean
+          const localMean = signal.slice(Math.max(0, i-15), i+15).reduce((a,b)=>a+Math.abs(b),0) / 30;
+          if (Math.abs(signal[i]) > localMean * 0.6) {
+            peaks.push(i);
+          }
+        }
+      }
+      return peaks;
+    }
+
+    function computeBPM() {
+      if (filteredBuf.length < SAMPLE_RATE * 5) return null; // need 5+ seconds
+      const recent = filteredBuf.slice(-SAMPLE_RATE * 10);
+      const peaks = detectPeaks(recent);
+      if (peaks.length < 3) return null;
+
+      // average peak-to-peak interval
+      const intervals = [];
+      for (let i = 1; i < peaks.length; i++) {
+        const interval = (peaks[i] - peaks[i-1]) / SAMPLE_RATE;
+        if (interval > 0.33 && interval < 1.5) { // 40-180 BPM range
+          intervals.push(interval);
+        }
+      }
+      if (intervals.length < 2) return null;
+
+      const meanInterval = intervals.reduce((a,b)=>a+b,0) / intervals.length;
+      return Math.round(60 / meanInterval);
+    }
+
+    // ── Camera start ──
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: 320, height: 240, frameRate: 30 }
+        });
+        video.srcObject = stream;
+        document.getElementById('video-wrap').style.display = 'block';
+        document.getElementById('start-btn').style.display = 'none';
+        statusEl.textContent = 'stabilizing… keep still';
+        measuring = true;
+        requestAnimationFrame(processFrame);
+
+        // try connecting to strap for comparison
+        connectStrap();
+      } catch (e) {
+        statusEl.textContent = 'camera access denied: ' + e.message;
+      }
+    }
+
+    // ── Frame processing ──
+    function processFrame(time) {
+      if (!measuring) return;
+
+      const now = time / 1000;
+      if (now - lastFrameTime < 1 / SAMPLE_RATE) {
+        requestAnimationFrame(processFrame);
+        return;
+      }
+      lastFrameTime = now;
+      frameCount++;
+
+      // draw video to canvas
+      ctx.drawImage(video, 0, 0, 320, 240);
+
+      // extract green channel from ROI
+      const imageData = ctx.getImageData(roiX, roiY, roiW, roiH);
+      const pixels = imageData.data;
+      let greenSum = 0;
+      let count = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        greenSum += pixels[i + 1]; // green channel
+        count++;
+      }
+      const greenMean = greenSum / count;
+      greenBuf.push(greenMean);
+      if (greenBuf.length > SAMPLE_RATE * BUF_SECONDS) greenBuf.shift();
+
+      // bandpass filter
+      const filtered = bandpass(greenMean);
+      filteredBuf.push(filtered);
+      if (filteredBuf.length > SAMPLE_RATE * BUF_SECONDS) filteredBuf.shift();
+
+      // compute BPM every 30 frames
+      if (frameCount % 15 === 0 && filteredBuf.length > SAMPLE_RATE * 5) {
+        const bpm = computeBPM();
+        if (bpm && bpm > 40 && bpm < 180) {
+          currentBPM = bpm;
+          bpmEl.textContent = bpm;
+          const stability = filteredBuf.length / (SAMPLE_RATE * BUF_SECONDS);
+          confEl.textContent = stability > 0.8 ? 'stable signal' : 'stabilizing…';
+          statusEl.textContent = `measuring · ${filteredBuf.length} samples · ${(filteredBuf.length / SAMPLE_RATE).toFixed(0)}s`;
+        }
+      }
+
+      // draw ROI overlay
+      const overlay = document.getElementById('roi-overlay');
+      overlay.innerHTML = `<rect x="${roiX}" y="${roiY}" width="${roiW}" height="${roiH}"
+        fill="none" stroke="rgba(108,197,230,0.3)" stroke-width="1" rx="4"/>`;
+
+      // draw signal chart
+      drawSignalChart();
+
+      // compare with strap
+      updateCompare();
+
+      requestAnimationFrame(processFrame);
+    }
+
+    function drawSignalChart() {
+      if (filteredBuf.length < 10) return;
+      const recent = filteredBuf.slice(-200);
+      const mn = Math.min(...recent);
+      const mx = Math.max(...recent);
+      const rng = mx - mn || 1;
+      const w = 400, h = 80, pad = 4;
+
+      const pts = recent.map((v, i) => {
+        const x = pad + (i / (recent.length - 1)) * (w - pad * 2);
+        const y = pad + (1 - (v - mn) / rng) * (h - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+
+      chartSvg.innerHTML = `
+        <polyline points="${pts}" fill="none" stroke="#6cc5e6" stroke-width="1.5"/>
+        <text x="${w-pad}" y="${pad+10}" text-anchor="end" fill="#555" font-size="10"
+              font-family="monospace">${currentBPM || '—'} bpm</text>
+      `;
+    }
+
+    // ── Strap comparison (via bridge WebSocket) ──
+    let strapHR = 0;
+    function connectStrap() {
+      try {
+        const ws = new WebSocket('ws://localhost:8765');
+        ws.onmessage = (e) => {
+          const d = JSON.parse(e.data);
+          if (d.type === 'hr' && d.bpm) {
+            strapHR = d.bpm;
+            compareEl.style.display = 'block';
+          }
+        };
+        ws.onclose = () => setTimeout(connectStrap, 3000);
+        ws.onerror = () => {};
+      } catch(e) {}
+    }
+
+    function updateCompare() {
+      if (!strapHR || !currentBPM) return;
+      document.getElementById('strap-hr').textContent = strapHR;
+      document.getElementById('cam-hr-compare').textContent = currentBPM;
+      const delta = currentBPM - strapHR;
+      const deltaEl = document.getElementById('delta');
+      deltaEl.textContent = `(${delta > 0 ? '+' : ''}${delta})`;
+      deltaEl.style.color = Math.abs(delta) <= 5 ? '#7a7' : Math.abs(delta) <= 10 ? '#aa7' : '#a77';
+    }
+  </script>
+</body>
+</html>
