@@ -397,9 +397,11 @@ def pulse_mod(base_bri: float, bpm: float, t: float) -> float:
 
 class HueBridge:
     def __init__(self, lights: list = None):
-        self.lights = lights or [2, 3, 4]
+        self.lights = lights or [2, 3, 4, 6]
         self.cfg = None
         self.last_update = 0
+        self.last_beat_time = 0
+        self.heartbeat_intensity = 0.5  # 0=invisible, 1=max flash
 
     def connect(self) -> bool:
         if not os.path.exists(HUE_CONFIG):
@@ -415,33 +417,54 @@ class HueBridge:
             print(f"hue bridge unreachable: {e}")
             return False
 
+    def on_heartbeat(self):
+        self.last_beat_time = time.time()
+
     def apply_gradient(self, base_state: dict, t: float, pulse_bpm: float):
         now = time.time()
-        if now - self.last_update < 0.5:
+        if now - self.last_update < 0.15:  # faster updates for heartbeat visibility
             return
         self.last_update = now
 
+        # heartbeat flash: wide enough for Hue bridge to render (~300ms visible)
+        beat_age = now - self.last_beat_time
+        beat_flash = math.exp(-beat_age * 2.5) if beat_age < 2 else 0
+        beat_flash *= self.heartbeat_intensity
+
         n = len(self.lights)
         for i, lid in enumerate(self.lights):
-            # each light gets a phase offset — creates a ripple/wave
+            # breathing wave with per-light phase offset
             offset = i / n
             phase = (t * pulse_bpm / 60.0 + offset) * math.pi * 2
             wave = (math.sin(phase) + 1) / 2
             wave = wave * wave
 
-            # hue shift: each light slightly different, drifting over time
+            # heartbeat ripple: each light flashes with a slight delay
+            beat_delay = i * 0.12
+            local_age = beat_age - beat_delay
+            local_beat = math.exp(-local_age * 2.5) if 0 < local_age < 2 else 0
+            local_beat *= self.heartbeat_intensity
+
+            # hue drift
             hue_spread = 3000
             hue_drift = int(math.sin(t * 0.03 + i * 1.5) * hue_spread)
 
             bri = base_state["bri"]
-            mod_bri = int(bri * (0.40 + 0.60 * wave))
+            # combine breathing + heartbeat flash
+            breathing_bri = bri * (0.30 + 0.70 * wave)
+            # heartbeat boosts to near-max then decays
+            flash_bri = 254 * local_beat
+            mod_bri = int(min(254, max(breathing_bri, flash_bri)))
+
+            # transition: instant on heartbeat flash, smooth otherwise
+            trans = 0 if local_beat > 0.2 else (2 if local_beat > 0.05 else base_state.get("transitiontime", 8))
 
             state = {
                 "on": True,
                 "hue": (base_state["hue"] + hue_drift) % 65535,
                 "sat": base_state["sat"],
                 "bri": max(1, mod_bri),
-                "transitiontime": base_state.get("transitiontime", 8),
+                "transitiontime": trans,
             }
             try:
                 self._api("PUT", f"/lights/{lid}/state", state)
@@ -635,6 +658,7 @@ async def run(args):
     print(f"preset: {args.preset} — {PRESETS[args.preset]['desc']}")
 
     hue = HueBridge(lights=args.hue_lights)
+    hue.heartbeat_intensity = args.heartbeat
     hue_ok = hue.connect()
 
     buzzer = BuzzerLED()
@@ -665,6 +689,9 @@ async def run(args):
                     if msg.get("type") == "hr":
                         hrv.current_hr = msg["bpm"]
                         for rr in msg.get("rr", []):
+                            # each RR = one heartbeat — trigger flash
+                            if hue_ok:
+                                hue.on_heartbeat()
                             if not hrv.add_rr(rr):
                                 continue
 
@@ -696,8 +723,13 @@ async def run(args):
                             if buzzer_ok:
                                 r, g, b = light.rgb
                                 mod = mod_bri / max(0.01, light.brightness)
-                                # buzzer LEDs need higher minimum to be visible
-                                br, bg, bb = int(r * mod), int(g * mod), int(b * mod)
+                                # heartbeat flash on buzzer too
+                                beat_age = now - hue.last_beat_time if hue_ok else 1
+                                buzz_flash = math.exp(-beat_age * 8) * args.heartbeat if beat_age < 1 else 0
+                                flash_boost = 1 + buzz_flash * 3
+                                br = int(min(255, r * mod * flash_boost))
+                                bg = int(min(255, g * mod * flash_boost))
+                                bb = int(min(255, b * mod * flash_boost))
                                 bmax = max(br, bg, bb, 1)
                                 if bmax < 40:
                                     scale = 40 / bmax
@@ -759,8 +791,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="HRV → Lights daemon",
         epilog="Presets: " + ", ".join(f"{k} ({v['desc']})" for k, v in PRESETS.items()))
-    parser.add_argument("--hue-lights", type=int, nargs="+", default=[2, 3, 4],
-                        help="Hue light IDs to control (default: 2 3 4)")
+    parser.add_argument("--hue-lights", type=int, nargs="+", default=[2, 3, 4, 6],
+                        help="Hue light IDs to control (default: 2 3 4 6)")
+    parser.add_argument("--heartbeat", type=float, default=0.5,
+                        help="Heartbeat flash intensity 0-1 (default: 0.5, 0=off)")
     parser.add_argument("--no-buzzer", action="store_true")
     parser.add_argument("--preset", default=DEFAULT_PRESET,
                         choices=list(PRESETS.keys()),
