@@ -84,14 +84,14 @@
     let currentBPM = 0;
     let measuring = false;
 
-    // face ROI (simple: center rectangle if no face detection)
-    let roiX = 100, roiY = 40, roiW = 120, roiH = 80;
+    // face ROI — cheeks area (below eyes, above mouth, avoids glasses)
+    let roiX = 90, roiY = 100, roiW = 140, roiH = 70;
 
-    // ── Bandpass filter (2nd order IIR, 0.75-3.0 Hz at 30fps) ──
-    // Butterworth bandpass coefficients precomputed
-    // These work for fs=30, flo=0.75, fhi=3.0
-    const B = [0.2066, 0, -0.4131, 0, 0.2066];
-    const A = [1, -1.3073, 1.1410, -0.5693, 0.1638];
+    // ── Bandpass filter (2nd order IIR, 0.7-2.5 Hz at 30fps = 42-150 BPM) ──
+    // Tighter upper bound to reject harmonics/noise
+    // Butterworth bandpass, fs=30, flo=0.7, fhi=2.5
+    const B = [0.1367, 0, -0.2734, 0, 0.1367];
+    const A = [1, -1.5328, 1.5165, -0.8198, 0.2554];
     const xHist = [0, 0, 0, 0, 0];
     const yHist = [0, 0, 0, 0, 0];
 
@@ -104,16 +104,24 @@
       return y;
     }
 
-    // ── Peak detection ──
+    // ── Peak detection with minimum distance ──
     function detectPeaks(signal) {
+      const minDist = Math.floor(SAMPLE_RATE * 0.4); // 400ms min = 150 BPM max
       const peaks = [];
-      for (let i = 2; i < signal.length - 2; i++) {
-        if (signal[i] > signal[i-1] && signal[i] > signal[i-2] &&
+      // adaptive threshold: mean + 0.5 * std of absolute values
+      const abs = signal.map(Math.abs);
+      const mean = abs.reduce((a,b) => a+b, 0) / abs.length;
+      const std = Math.sqrt(abs.reduce((a,b) => a + (b-mean)**2, 0) / abs.length);
+      const threshold = mean + std * 0.3;
+
+      for (let i = 3; i < signal.length - 3; i++) {
+        if (signal[i] > signal[i-1] && signal[i] > signal[i-2] && signal[i] > signal[i-3] &&
             signal[i] > signal[i+1] && signal[i] > signal[i+2]) {
-          // check amplitude — must be above mean
-          const localMean = signal.slice(Math.max(0, i-15), i+15).reduce((a,b)=>a+Math.abs(b),0) / 30;
-          if (Math.abs(signal[i]) > localMean * 0.6) {
-            peaks.push(i);
+          if (signal[i] > threshold) {
+            // enforce minimum distance
+            if (peaks.length === 0 || i - peaks[peaks.length - 1] >= minDist) {
+              peaks.push(i);
+            }
           }
         }
       }
@@ -196,11 +204,17 @@
       // compute BPM every 30 frames
       if (frameCount % 15 === 0 && filteredBuf.length > SAMPLE_RATE * 5) {
         const bpm = computeBPM();
-        if (bpm && bpm > 40 && bpm < 180) {
-          currentBPM = bpm;
-          bpmEl.textContent = bpm;
+        if (bpm && bpm > 40 && bpm < 160) {
+          // exponential moving average to smooth fluctuations
+          if (currentBPM === 0) {
+            currentBPM = bpm;
+          } else {
+            // heavier smoothing: 85% old, 15% new
+            currentBPM = Math.round(currentBPM * 0.85 + bpm * 0.15);
+          }
+          bpmEl.textContent = currentBPM;
           const stability = filteredBuf.length / (SAMPLE_RATE * BUF_SECONDS);
-          confEl.textContent = stability > 0.8 ? 'stable signal' : 'stabilizing…';
+          confEl.textContent = stability > 0.8 ? 'stable' : 'stabilizing…';
           statusEl.textContent = `measuring · ${filteredBuf.length} samples · ${(filteredBuf.length / SAMPLE_RATE).toFixed(0)}s`;
         }
       }
