@@ -721,20 +721,24 @@ async def run(args):
                                 mod_bri = min(0.95, mod_bri + mv * 0.15)
 
                             if buzzer_ok:
-                                r, g, b = light.rgb
-                                mod = mod_bri / max(0.01, light.brightness)
-                                # heartbeat flash on buzzer too
+                                # buzzer is small LEDs — needs to be BRIGHT
+                                # heartbeat: flash to full white, then decay to color
                                 beat_age = now - hue.last_beat_time if hue_ok else 1
-                                buzz_flash = math.exp(-beat_age * 8) * args.heartbeat if beat_age < 1 else 0
-                                flash_boost = 1 + buzz_flash * 3
-                                br = int(min(255, r * mod * flash_boost))
-                                bg = int(min(255, g * mod * flash_boost))
-                                bb = int(min(255, b * mod * flash_boost))
-                                bmax = max(br, bg, bb, 1)
-                                if bmax < 40:
-                                    scale = 40 / bmax
-                                    br, bg, bb = int(br * scale), int(bg * scale), int(bb * scale)
-                                buzzer.set_rgb(min(255, br), min(255, bg), min(255, bb))
+                                buzz_flash = math.exp(-beat_age * 4) * args.heartbeat if beat_age < 1.5 else 0
+
+                                if buzz_flash > 0.3:
+                                    # during flash: bright white-tinted burst
+                                    br = int(min(255, 200 + buzz_flash * 55))
+                                    bg = int(min(255, 100 + buzz_flash * 100))
+                                    bb = int(min(255, 80 + buzz_flash * 80))
+                                else:
+                                    # resting: bright base color (minimum 100 RGB)
+                                    r, g, b = light.rgb
+                                    scale = max(1, 120 / max(r, g, b, 1))
+                                    br = int(min(255, r * scale))
+                                    bg = int(min(255, g * scale))
+                                    bb = int(min(255, b * scale))
+                                buzzer.set_rgb(br, bg, bb)
 
                             r, g, b = light.rgb
                             hex_c = f"#{r:02x}{g:02x}{b:02x}"

@@ -118,13 +118,16 @@
       const cw = W - pad.l - pad.r;
       const ch = H - pad.t - pad.b;
 
-      const maxV = Math.max(50, ...data.map(d => d.rmssd)) * 1.15;
+      // filter out artifact readings for auto-scaling
+      const cleanRmssd = data.map(d => d.rmssd).filter(v => v > 0 && v < 120);
+      const minV = cleanRmssd.length > 0 ? Math.max(0, Math.min(...cleanRmssd) - 5) : 0;
+      const maxV = cleanRmssd.length > 0 ? Math.max(minV + 20, Math.max(...cleanRmssd) * 1.1) : 60;
       const minT = data[0].ts;
       const maxT = data[data.length - 1].ts;
       const rangeT = Math.max(1, maxT - minT);
 
       const x = (ts) => pad.l + ((ts - minT) / rangeT) * cw;
-      const y = (v) => pad.t + (1 - v / maxV) * ch;
+      const y = (v) => pad.t + (1 - (Math.min(v, maxV) - minV) / (maxV - minV)) * ch;
 
       // y grid
       ctx.strokeStyle = '#1a1a22';
