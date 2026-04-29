@@ -270,14 +270,17 @@
         }
 
         if (msg.type === 'history') {
-          data = msg.data;
+          // filter artifacts from historical data
+          data = msg.data.filter(d => d.rmssd > 0 && d.rmssd < 120);
           document.getElementById('session').textContent =
-            `${data.length} historical readings loaded`;
+            `${data.length} readings loaded`;
           draw();
           return;
         }
 
         if (msg.type === 'tick') {
+          // clamp artifact readings
+          if (msg.rmssd > 120) msg.rmssd = 120;
           data.push(msg);
           if (data.length > 600) data.shift();
 

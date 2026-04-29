@@ -485,8 +485,11 @@ class HueBridge:
 class BuzzerLED:
     def __init__(self):
         self.mo = None
+        self.mi = None
         self.available = False
         self.last_rgb = (-1, -1, -1)
+        self.last_press_time = 0
+        self.press_count = 0
 
     def connect(self) -> bool:
         try:
@@ -499,10 +502,56 @@ class BuzzerLED:
             if "timeBuzzer" in name:
                 self.mo.open_port(i)
                 self.available = True
-                print("timeBuzzer connected")
-                return True
-        print("timeBuzzer not found — disabled")
-        return False
+                print("timeBuzzer LED connected")
+                break
+
+        # try MIDI input for button press
+        try:
+            self.mi = rtmidi.MidiIn()
+            for i, name in enumerate(self.mi.get_ports()):
+                if "timeBuzzer" in name:
+                    self.mi.open_port(i)
+                    self.mi.set_callback(self._midi_callback)
+                    # init rotation tracking
+                    self.mo.send_message([187, 80, 64])
+                    print("timeBuzzer input connected (double-press → dictation)")
+                    break
+        except Exception as e:
+            print(f"timeBuzzer input not available: {e}")
+
+        return self.available
+
+    def _midi_callback(self, event, _):
+        msg, _ = event
+        if len(msg) < 3:
+            return
+        status, cc, value = msg[0], msg[1], msg[2]
+        if status != 187:  # CC on channel 12
+            return
+        if cc == 82 and value == 127:  # press down
+            now = time.time()
+            if now - self.last_press_time < 0.5:
+                self.press_count += 1
+            else:
+                self.press_count = 1
+            self.last_press_time = now
+
+            if self.press_count >= 2:
+                self.press_count = 0
+                self._trigger_dictation()
+
+    def _trigger_dictation(self):
+        print("\n  buzzer double-press → dictation")
+        # trigger Whispr Flow via fn-fn (double fn key)
+        subprocess.Popen([
+            "osascript", "-e",
+            'tell application "System Events" to key code 63',
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.15)
+        subprocess.Popen([
+            "osascript", "-e",
+            'tell application "System Events" to key code 63',
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def set_rgb(self, r: int, g: int, b: int):
         if not self.available:
