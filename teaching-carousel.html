@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teaching as Medicine — Carousel</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  @font-face { font-family:'Monaspace Argon'; src:url('https://cdn.jsdelivr.net/gh/githubnext/monaspace@v1.101/fonts/webfonts/MonaspaceArgon-Bold.woff2') format('woff2'); font-weight:700; font-display:swap; }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-snap-type:y mandatory; scroll-behavior:smooth; }
+  body { background:#070709; color:#d8d8d0; }
+
+  .slide { height:100vh; scroll-snap-align:start; display:flex; align-items:center;
+           justify-content:center; position:relative; overflow:hidden; }
+
+  /* image slides: full bleed */
+  .slide.img { background-size:contain; background-position:center; background-repeat:no-repeat; }
+
+  /* text slides: big centered text */
+  .slide.txt { padding:60px; }
+  .slide.txt .words { text-align:center; }
+
+  .big { font-family:'EB Garamond',Georgia,serif; font-weight:400; line-height:1.1; }
+  .mono { font-family:'Monaspace Argon',monospace; font-weight:700; }
+
+  .slide-num { position:absolute; bottom:16px; right:24px; font-family:'Monaspace Argon',monospace; font-size:0.7rem; color:#1a1a22; }
+
+  .nav { position:fixed; right:14px; top:50%; transform:translateY(-50%); z-index:100; }
+  .nav-dot { width:7px; height:7px; border-radius:50%; background:#222; margin:6px 0; cursor:pointer; transition:all 0.3s; }
+  .nav-dot.active { background:#c45a28; transform:scale(1.6); }
+
+  /* chart slide */
+  .chart-slide { padding:50px; }
+  canvas { width:100%!important; max-height:500px!important; }
+
+  /* comparison bars */
+  .bar { display:flex; align-items:center; gap:16px; margin:16px 0; }
+  .bar-fill { height:50px; border-radius:5px; display:flex; align-items:center; padding-left:18px;
+              font-family:'Monaspace Argon',monospace; font-size:1.5rem; color:#fff; font-weight:700; }
+  .bar-label { font-family:'EB Garamond',serif; font-size:1.5rem; color:#888; min-width:190px; text-align:right; }
+</style>
+</head>
+<body>
+<div class="nav" id="nav"></div>
+
+<!-- 1. IMAGE: ensō with heartbeat -->
+<div class="slide img" id="s1" style="background-image:url('teaching-art-3.png')">
+  <div class="slide-num">1</div>
+</div>
+
+<!-- 2. TEXT: title -->
+<div class="slide txt" id="s2">
+  <div class="words">
+    <p class="big" style="font-size:7rem;color:#fff">Teaching<br>as Medicine</p>
+    <p style="font-family:'EB Garamond';font-size:1.6rem;color:#555;font-style:italic;margin-top:20px">Gleb Kalinin · April 2026</p>
+  </div>
+  <div class="slide-num">2</div>
+</div>
+
+<!-- 3. IMAGE: chaotic ECG (anxiety) -->
+<div class="slide img" id="s3" style="background-image:url('teaching-art-4.png')">
+  <div class="slide-num">3</div>
+</div>
+
+<!-- 4. TEXT: the experiment -->
+<div class="slide txt" id="s4">
+  <div class="words">
+    <p class="mono" style="font-size:6rem;color:#4aafff">71,000</p>
+    <p class="big" style="font-size:3rem;color:#888;margin-top:12px">heartbeats recorded</p>
+    <p class="big" style="font-size:1.6rem;color:#444;margin-top:20px">48 hours · chest strap · every beat</p>
+  </div>
+  <div class="slide-num">4</div>
+</div>
+
+<!-- 5. IMAGE: 2.3× graffiti -->
+<div class="slide img" id="s5" style="background-image:url('teaching-art-6.png')">
+  <div class="slide-num">5</div>
+</div>
+
+<!-- 6. TEXT: while teaching -->
+<div class="slide txt" id="s6">
+  <div class="words">
+    <p class="big" style="font-size:3rem;color:#888">my HRV went</p>
+    <p class="mono" style="font-size:7rem;color:#4aafff;margin:10px 0">2.3×</p>
+    <p class="big" style="font-size:3rem;color:#fff">while teaching</p>
+  </div>
+  <div class="slide-num">6</div>
+</div>
+
+<!-- 7. IMAGE: calm ECG -->
+<div class="slide img" id="s7" style="background-image:url('teaching-art-5.png')">
+  <div class="slide-num">7</div>
+</div>
+
+<!-- 8. CHART: real data -->
+<div class="slide chart-slide" id="s8" style="background:#0a0a0f">
+  <div style="width:100%;max-width:900px;margin:0 auto">
+    <p class="mono" style="font-size:1rem;color:#555;letter-spacing:0.2em;margin-bottom:12px">THE DATA</p>
+    <p class="big" style="font-size:2.4rem;color:#fff;margin-bottom:24px">HRV during the lesson</p>
+    <canvas id="chart-lesson"></canvas>
+    <p style="font-family:'EB Garamond';font-size:1.1rem;color:#333;margin-top:10px;text-align:center">Peak flow at 45–75 min · HR dropped to 59 bpm</p>
+  </div>
+  <div class="slide-num">8</div>
+</div>
+
+<!-- 9. COMPARISON: bars -->
+<div class="slide" id="s9" style="padding:50px">
+  <div style="max-width:900px;width:100%">
+    <p class="big" style="font-size:3rem;color:#fff;margin-bottom:32px">Teaching beat everything</p>
+    <div class="bar">
+      <div class="bar-label">Teaching</div>
+      <div class="bar-fill" style="width:58%;background:rgba(74,170,255,0.7)">65</div>
+    </div>
+    <div class="bar">
+      <div class="bar-label">Exercise</div>
+      <div class="bar-fill" style="width:39%;background:rgba(42,122,90,0.6)">44</div>
+    </div>
+    <div class="bar">
+      <div class="bar-label">Cold shower</div>
+      <div class="bar-fill" style="width:35%;background:rgba(42,122,90,0.5)">40</div>
+    </div>
+    <div class="bar">
+      <div class="bar-label">Breathing</div>
+      <div class="bar-fill" style="width:33%;background:rgba(200,144,0,0.5)">38</div>
+    </div>
+    <div class="bar">
+      <div class="bar-label" style="color:#444">Baseline</div>
+      <div class="bar-fill" style="width:25%;background:rgba(100,100,100,0.3)">29</div>
+    </div>
+    <p style="font-family:'Monaspace Argon';font-size:0.8rem;color:#222;margin-top:16px">RMSSD (ms) · higher = calmer</p>
+  </div>
+  <div class="slide-num">9</div>
+</div>
+
+<!-- 10. IMAGE: scribble vs wave -->
+<div class="slide img" id="s10" style="background-image:url('teaching-art-2.png')">
+  <div class="slide-num">10</div>
+</div>
+
+<!-- 11. TEXT: the insight -->
+<div class="slide txt" id="s11">
+  <div class="words">
+    <p class="big" style="font-size:3.2rem;color:#888;font-style:italic">Anxiety lives in</p>
+    <p class="big" style="font-size:4.5rem;color:#c45a28;font-style:italic;margin:12px 0">the gaps</p>
+    <p class="big" style="font-size:3.2rem;color:#888;font-style:italic">between purpose.</p>
+  </div>
+  <div class="slide-num">11</div>
+</div>
+
+<!-- 12. IMAGE: complete ensō + CTA -->
+<div class="slide img" id="s12" style="background-image:url('teaching-art-3.png')">
+  <div style="position:absolute;bottom:120px;left:0;right:0;text-align:center">
+    <p class="big" style="font-size:2.4rem;color:#c45a28;font-style:italic">What's your medicine?</p>
+    <p style="font-family:'Monaspace Argon';font-size:0.7rem;color:#444;margin-top:16px;letter-spacing:0.1em">GLEB KALININ · glebkalinin.com</p>
+  </div>
+  <div class="slide-num">12</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+  Chart.defaults.font.family = "'EB Garamond', Georgia, serif";
+  Chart.defaults.color = '#666';
+  Chart.defaults.scale.grid.color = '#1a1a22';
+
+  new Chart(document.getElementById('chart-lesson'), {
+    type: 'line',
+    data: {
+      labels: ['0', '15', '30', '45', '60', '75', '90'],
+      datasets: [{
+        label: 'RMSSD (ms)',
+        data: [46, 42, 36, 61, 69, 56, 48],
+        borderColor: '#4aafff',
+        backgroundColor: 'rgba(74,170,255,0.08)',
+        fill: true, borderWidth: 5, pointRadius: 10,
+        pointBackgroundColor: ['#4aafff','#4aafff','#4aafff','#fff','#fff','#4aafff','#4aafff'],
+        pointBorderWidth: 0, tension: 0.3,
+      }, {
+        label: 'HR (bpm)',
+        data: [59, 62, 62, 64, 60, 66, 68],
+        borderColor: 'rgba(224,106,122,0.4)',
+        fill: false, borderWidth: 2, pointRadius: 5, tension: 0.3, yAxisID: 'y1'
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { font: { size: 18 }, padding: 24, boxWidth: 14, boxHeight: 14 } } },
+      scales: {
+        x: { grid:{display:false}, title:{display:true,text:'minutes',font:{size:18}}, ticks:{font:{size:16}} },
+        y: { title:{display:true,text:'RMSSD',font:{size:18}}, min:20, max:80, ticks:{font:{size:14}} },
+        y1: { position:'right', title:{display:true,text:'HR',font:{size:14}}, grid:{display:false}, min:50, max:80, ticks:{font:{size:12}} }
+      }
+    }
+  });
+
+  const slides = document.querySelectorAll('.slide');
+  const nav = document.getElementById('nav');
+  slides.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'nav-dot' + (i===0?' active':'');
+    d.onclick = () => s.scrollIntoView({behavior:'smooth'});
+    nav.appendChild(d);
+  });
+  new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const idx = [...slides].indexOf(e.target);
+        document.querySelectorAll('.nav-dot').forEach((d,i) => d.classList.toggle('active', i===idx));
+      }
+    });
+  }, {threshold:0.5}).observe(document.querySelectorAll('.slide'));
+  slides.forEach(s => new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const idx = [...slides].indexOf(e.target);
+        document.querySelectorAll('.nav-dot').forEach((d,i) => d.classList.toggle('active', i===idx));
+      }
+    });
+  }, {threshold:0.5}).observe(s));
+
+  document.addEventListener('keydown', e => {
+    const cur = [...slides].findIndex(s => s.getBoundingClientRect().top >= -100);
+    if(e.key==='ArrowDown'||e.key===' '){e.preventDefault();slides[Math.min(11,cur+1)]?.scrollIntoView({behavior:'smooth'});}
+    if(e.key==='ArrowUp'){e.preventDefault();slides[Math.max(0,cur-1)]?.scrollIntoView({behavior:'smooth'});}
+  });
+</script>
+</body>
+</html>
