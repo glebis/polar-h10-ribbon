@@ -536,6 +536,9 @@ canvas { display:block; width:100%; height:100%; }
 
   // --- Connection UI ---
   connectBtn.addEventListener('click', doConnect);
+
+  // auto-connect as viewer on load
+  setTimeout(doConnect, 500);
   urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
 
   // --- Keyboard ---
