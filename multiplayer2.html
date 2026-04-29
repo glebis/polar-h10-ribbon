@@ -42,6 +42,10 @@ canvas { display:block; position:fixed; inset:0; }
 <canvas id="c"></canvas>
 <div id="sync-bar"><div id="sync-fill"></div></div>
 <div id="sync-label">sync —</div>
+<div id="breath-ring" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+  pointer-events:none;z-index:5;opacity:0.25"></div>
+<div id="breath-text" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+  font:20px monospace;color:rgba(255,255,255,0.3);z-index:6;pointer-events:none;text-align:center"></div>
 
 <div id="preset-bar">
   <button class="preset-btn active" data-preset="ambient">ambient</button>
@@ -60,7 +64,14 @@ canvas { display:block; position:fixed; inset:0; }
   <label>gravity <input type="range" id="cfg-gravity" min="0" max="100" value="30" style="width:120px;vertical-align:middle"> <span id="cfg-gravity-v">0.3</span></label><br>
   <label>particle life <input type="range" id="cfg-life" min="10" max="200" value="100" style="width:120px;vertical-align:middle"> <span id="cfg-life-v">1.0</span></label><br>
   <label>volume <input type="range" id="cfg-vol" min="0" max="100" value="30" style="width:120px;vertical-align:middle"> <span id="cfg-vol-v">0.3</span></label><br>
-  <label>particle count <input type="range" id="cfg-count" min="1" max="30" value="8" style="width:120px;vertical-align:middle"> <span id="cfg-count-v">8</span></label>
+  <label>particle count <input type="range" id="cfg-count" min="1" max="30" value="8" style="width:120px;vertical-align:middle"> <span id="cfg-count-v">8</span></label><br>
+  <label>breathing guide <select id="cfg-breath" style="font:11px monospace;background:#1a1a22;color:#ccc;border:1px solid #333;padding:2px">
+    <option value="off">off</option>
+    <option value="5.5" selected>5.5 bpm</option>
+    <option value="5.0">5.0 bpm</option>
+    <option value="6.0">6.0 bpm</option>
+    <option value="4.5">4.5 bpm</option>
+  </select></label>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
@@ -593,6 +604,33 @@ canvas { display:block; position:fixed; inset:0; }
     };
   });
 
+  // ── Breathing guide audio drone ──
+  let breathOsc = null, breathGain = null;
+
+  function updateBreathAudio(eased, isInhale) {
+    if (!audioCtx || !masterGain) return;
+    if (!breathOsc) {
+      breathOsc = audioCtx.createOscillator();
+      breathOsc.type = 'sine';
+      breathOsc.frequency.value = 220;
+      breathGain = audioCtx.createGain();
+      breathGain.gain.value = 0;
+      breathOsc.connect(breathGain);
+      breathGain.connect(masterGain);
+      breathOsc.start();
+    }
+    const t = audioCtx.currentTime;
+    const freq = 180 + eased * 120; // 180-300 Hz
+    breathOsc.frequency.setTargetAtTime(freq, t, 0.1);
+    breathGain.gain.setTargetAtTime(0.012, t, 0.3);
+  }
+
+  function stopBreathAudio() {
+    if (breathGain) {
+      breathGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.3);
+    }
+  }
+
   // ── WebSocket ──
   let ws = null;
   function connect() {
@@ -806,6 +844,52 @@ canvas { display:block; position:fixed; inset:0; }
       ctx.font = '24px monospace';
       ctx.fillStyle = p.color + '90';
       ctx.fillText(p.bpm || '—', p.spawnX, H - 55);
+    }
+
+    // ── Breathing guide ──
+    const breathRate = document.getElementById('cfg-breath').value;
+    if (breathRate !== 'off') {
+      const bpm = parseFloat(breathRate);
+      const cycleDuration = 60 / bpm;
+      const halfCycle = cycleDuration / 2;
+      const cyclePos = (now % cycleDuration);
+      const isInhale = cyclePos < halfCycle;
+      const phase = isInhale ? cyclePos / halfCycle : 1 - (cyclePos - halfCycle) / halfCycle;
+      // sine-eased
+      const eased = (1 - Math.cos(phase * Math.PI)) / 2;
+
+      // draw expanding/contracting ring in center
+      const minR = 40;
+      const maxR = Math.min(W, H) * 0.18;
+      const ringR = minR + (maxR - minR) * eased;
+
+      ctx.strokeStyle = isInhale ? 'rgba(108,197,230,0.2)' : 'rgba(230,178,108,0.2)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(W/2, H/2, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // soft glow
+      ctx.strokeStyle = isInhale ? 'rgba(108,197,230,0.06)' : 'rgba(230,178,108,0.06)';
+      ctx.lineWidth = 12;
+      ctx.stroke();
+
+      // text
+      const breathEl = document.getElementById('breath-text');
+      const secs = isInhale ? (halfCycle - cyclePos) : (cycleDuration - cyclePos);
+      breathEl.textContent = `${isInhale ? 'in' : 'out'} ${Math.ceil(secs)}`;
+      breathEl.style.color = isInhale ? 'rgba(108,197,230,0.35)' : 'rgba(230,178,108,0.35)';
+
+      // breathing affects gravity — inhale lifts, exhale settles
+      if (cfg.gravity > 0) {
+        engine.gravity.y = cfg.gravity * (0.7 + eased * 0.6);
+      }
+
+      // breath audio
+      updateBreathAudio(eased, isInhale);
+    } else {
+      document.getElementById('breath-text').textContent = '';
+      stopBreathAudio();
     }
 
     // mode label
