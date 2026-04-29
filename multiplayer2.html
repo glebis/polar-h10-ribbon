@@ -98,11 +98,22 @@ canvas { display:block; position:fixed; inset:0; }
                    instrumentType === 'perc' ? 2 + Math.random() * 3 :
                    4 + Math.random() * 5;
 
+      // preset affects physics
+      const presetPhysics = {
+        ambient: { restitution: 0.3, frictionAir: 0.015, speedMul: 0.5 },
+        rhythmic: { restitution: 0.9, frictionAir: 0.002, speedMul: 1.5 },
+        melodic: { restitution: 0.6, frictionAir: 0.008, speedMul: 0.8 },
+        full: { restitution: 0.7, frictionAir: 0.005, speedMul: 1.0 },
+      }[currentPreset] || { restitution: 0.7, frictionAir: 0.005, speedMul: 1.0 };
+
       const body = Bodies.circle(x + (Math.random()-0.5)*20, y + (Math.random()-0.5)*20, size, {
-        restitution: 0.7, friction: 0.01, frictionAir: 0.005,
+        restitution: presetPhysics.restitution, friction: 0.01, frictionAir: presetPhysics.frictionAir,
         density: instrumentType === 'bass' ? 0.005 : 0.001,
       });
-      Body.setVelocity(body, { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed - 3 });
+      Body.setVelocity(body, {
+        x: Math.cos(angle) * speed * presetPhysics.speedMul,
+        y: Math.sin(angle) * speed * presetPhysics.speedMul - 3
+      });
       World.add(world, body);
 
       matterParticles.push({
@@ -158,44 +169,88 @@ canvas { display:block; position:fixed; inset:0; }
     const inst = INSTRUMENTS[instrument];
     if (!inst) return;
     const t = audioCtx.currentTime;
-    const semitone = SCALE[noteIdx % SCALE.length] + 12 * inst.octave;
-    const freq = ROOT * Math.pow(2, semitone / 12);
 
-    const osc = audioCtx.createOscillator();
-    osc.type = inst.wave;
-    osc.frequency.value = freq;
+    const PRESET_CONFIG = {
+      ambient: { volMul: 0.6, decayMul: 3, filterFreq: 600, filterQ: 0.5, reverbMul: 1, subdivisions: 1, detune: 5 },
+      rhythmic: { volMul: 1.2, decayMul: 0.5, filterFreq: 5000, filterQ: 6, reverbMul: 0.3, subdivisions: 2, detune: 0 },
+      melodic: { volMul: 1.0, decayMul: 1.5, filterFreq: 3000, filterQ: 1, reverbMul: 0.8, subdivisions: 1, detune: 2 },
+      full: { volMul: 1.0, decayMul: 1.0, filterFreq: 4000, filterQ: 2, reverbMul: 0.5, subdivisions: 3, detune: 3 },
+    };
+    const pc = PRESET_CONFIG[currentPreset] || PRESET_CONFIG.ambient;
 
-    const gain = audioCtx.createGain();
-    const vol = inst.vol * velocity;
-    gain.gain.setValueAtTime(0, t);
-    gain.gain.linearRampToValueAtTime(vol, t + inst.attack);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + inst.attack + inst.decay);
+    // subdivisions: rhythmic/full play extra notes after the beat
+    const notesToPlay = pc.subdivisions;
+    for (let sub = 0; sub < notesToPlay; sub++) {
+      const subDelay = sub * 0.12;
+      const subIdx = noteIdx + sub;
+      const semitone = SCALE[subIdx % SCALE.length] + 12 * inst.octave;
+      const freq = ROOT * Math.pow(2, semitone / 12);
 
-    // filter based on preset
-    const filt = audioCtx.createBiquadFilter();
-    filt.type = 'lowpass';
-    filt.frequency.value = currentPreset === 'ambient' ? 800 + sync * 2000 :
-                           currentPreset === 'melodic' ? 2000 + sync * 4000 : 4000;
-    filt.Q.value = currentPreset === 'rhythmic' ? 4 : 1;
+      const osc = audioCtx.createOscillator();
+      osc.type = currentPreset === 'ambient' ? 'sine' :
+                 currentPreset === 'rhythmic' ? (instrument === 'perc' ? 'square' : inst.wave) :
+                 inst.wave;
+      osc.frequency.value = freq;
+      // detune for richness
+      if (pc.detune > 0) osc.detune.value = (Math.random() - 0.5) * pc.detune;
 
-    osc.connect(filt); filt.connect(gain); gain.connect(masterGain);
-    osc.start(t); osc.stop(t + inst.attack + inst.decay + 0.1);
+      const decay = inst.decay * pc.decayMul;
+      const gain = audioCtx.createGain();
+      const vol = inst.vol * velocity * pc.volMul * (sub === 0 ? 1 : 0.4);
+      gain.gain.setValueAtTime(0, t + subDelay);
+      gain.gain.linearRampToValueAtTime(vol, t + subDelay + inst.attack);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + subDelay + inst.attack + decay);
 
-    // percussion: add noise hit
-    if (instrument === 'perc' && (currentPreset === 'rhythmic' || currentPreset === 'full')) {
-      const dur = 0.03;
+      const filt = audioCtx.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = pc.filterFreq + sync * 2000;
+      filt.Q.value = pc.filterQ;
+
+      osc.connect(filt); filt.connect(gain); gain.connect(masterGain);
+      osc.start(t + subDelay); osc.stop(t + subDelay + inst.attack + decay + 0.1);
+
+      // harmony note for melodic/full
+      if ((currentPreset === 'melodic' || currentPreset === 'full') && sub === 0 && sync > 0.3) {
+        const h = audioCtx.createOscillator();
+        h.type = 'sine';
+        h.frequency.value = freq * 1.5; // fifth
+        const hg = audioCtx.createGain();
+        hg.gain.setValueAtTime(vol * 0.25, t + 0.03);
+        hg.gain.exponentialRampToValueAtTime(0.001, t + decay * 0.8);
+        h.connect(hg); hg.connect(masterGain);
+        h.start(t + 0.03); h.stop(t + decay);
+      }
+    }
+
+    // percussion noise on every preset (louder in rhythmic)
+    if (instrument === 'perc' || currentPreset === 'rhythmic') {
+      const dur = currentPreset === 'rhythmic' ? 0.05 : 0.02;
       const bufLen = Math.floor(audioCtx.sampleRate * dur);
       const buf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
       const d = buf.getChannelData(0);
-      for (let i = 0; i < bufLen; i++) d[i] = (Math.random()*2-1)*Math.exp(-i/(bufLen*0.05));
+      for (let i = 0; i < bufLen; i++) d[i] = (Math.random()*2-1)*Math.exp(-i/(bufLen*0.04));
       const src = audioCtx.createBufferSource(); src.buffer = buf;
       const hp = audioCtx.createBiquadFilter();
-      hp.type = 'highpass'; hp.frequency.value = 6000;
+      hp.type = 'highpass'; hp.frequency.value = currentPreset === 'rhythmic' ? 4000 : 7000;
       const ng = audioCtx.createGain();
-      ng.gain.setValueAtTime(0.04 * velocity, t);
-      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+      const nv = currentPreset === 'rhythmic' ? 0.06 : 0.02;
+      ng.gain.setValueAtTime(nv * velocity, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
       src.connect(hp); hp.connect(ng); ng.connect(masterGain);
       src.start(t); src.stop(t + dur + 0.01);
+    }
+
+    // sub-bass thump for bass instrument
+    if (instrument === 'bass') {
+      const sub = audioCtx.createOscillator();
+      sub.type = 'sine';
+      sub.frequency.setValueAtTime(55, t);
+      sub.frequency.exponentialRampToValueAtTime(30, t + 0.15);
+      const sg = audioCtx.createGain();
+      sg.gain.setValueAtTime(0.06 * velocity * pc.volMul, t);
+      sg.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      sub.connect(sg); sg.connect(masterGain);
+      sub.start(t); sub.stop(t + 0.25);
     }
   }
 
@@ -328,14 +383,24 @@ canvas { display:block; position:fixed; inset:0; }
 
         // detect new beat
         if (data.lastBeat && data.lastBeat !== prevBeat) {
-          // spawn particles
-          const count = p.instrument === 'bass' ? 5 : p.instrument === 'perc' ? 12 : 8;
+          // HRV affects particle count + size: high RMSSD = more, bigger, calmer particles
+          const hrvCalm = Math.max(0, Math.min(1, (p.rmssd - 5) / 50));
+          const baseCount = p.instrument === 'bass' ? 5 : p.instrument === 'perc' ? 12 : 8;
+          const count = Math.round(baseCount * (0.5 + hrvCalm));
+
           spawnBeat(pid, p.spawnX, H * 0.4, p.color, count, p.instrument);
 
-          // play note
+          // HRV affects note selection: high RMSSD = higher notes (brighter), low = lower (darker)
           if (isAudible(pid)) {
-            p.noteIndex = (p.noteIndex + 1) % (SCALE.length * 2);
-            playInstrumentNote(p.instrument, p.noteIndex, syncValue, 0.8 + syncValue * 0.4);
+            // HRV drives melodic direction
+            if (hrvCalm > 0.5) {
+              p.noteIndex = Math.min(SCALE.length * 2 - 1, p.noteIndex + 1); // ascending when calm
+            } else {
+              p.noteIndex = Math.max(0, p.noteIndex - 1); // descending when stressed
+            }
+            // velocity from HRV: calm = softer, stressed = harder
+            const vel = 0.5 + (1 - hrvCalm) * 0.6 + syncValue * 0.2;
+            playInstrumentNote(p.instrument, p.noteIndex, syncValue, vel);
           }
         }
       }
