@@ -98,6 +98,11 @@
         <p>Exercise first, then measure how fast your HRV rebounds. Tests parasympathetic reactivation.</p>
         <div class="dur">8 min</div>
       </div>
+      <div class="mode-card" data-mode="resonance">
+        <h2>Resonance Frequency</h2>
+        <p>Find YOUR optimal breathing rate. Tests 6.5→6.0→5.5→5.0→4.5 bpm, picks the one with biggest HR swing.</p>
+        <div class="dur">10 min</div>
+      </div>
     </div>
 
     <button id="start-btn" disabled>connecting…</button>
@@ -226,6 +231,13 @@
         { name: 'Pre-Exercise Baseline', duration: 120, instruction: 'Sit quietly for 2 minutes.\nWe\'ll measure your resting state.', type: 'rest' },
         { name: 'Exercise', duration: 180, instruction: 'Do intense exercise for 3 minutes.\nBurpees, jumping jacks, or kettlebell swings.', type: 'exercise' },
         { name: 'Recovery Tracking', duration: 300, instruction: 'Sit down. Breathe normally.\nWe\'re measuring how fast your HRV recovers.', type: 'recovery' },
+      ],
+      resonance: [
+        { name: '6.5 bpm', duration: 120, instruction: 'Breathe at 6.5 breaths per minute.\n4.6s in, 4.6s out.\nFollow the guide — find a comfortable rhythm.', type: 'breathing', pattern: [4.6, 4.6] },
+        { name: '6.0 bpm', duration: 120, instruction: 'Slower now. 6.0 breaths per minute.\n5s in, 5s out.', type: 'breathing', pattern: [5, 5] },
+        { name: '5.5 bpm', duration: 120, instruction: '5.5 breaths per minute.\n5.5s in, 5.5s out.\nThis is the classic coherence rate.', type: 'breathing', pattern: [5.5, 5.5] },
+        { name: '5.0 bpm', duration: 120, instruction: '5.0 breaths per minute.\n6s in, 6s out.\nDeeper, slower.', type: 'breathing', pattern: [6, 6] },
+        { name: '4.5 bpm', duration: 120, instruction: 'Slowest rate. 4.5 breaths per minute.\n6.7s in, 6.7s out.\nThis may feel very slow — that\'s okay.', type: 'breathing', pattern: [6.7, 6.7] },
       ],
     };
 
@@ -375,6 +387,49 @@
 
           say(`Baseline RMSSD ${bAvg.toFixed(0)} milliseconds. Stress dropped ${reactivity.toFixed(0)} percent. Recovery restored ${recoveryPct.toFixed(0)} percent.`);
         }
+      }
+
+      // resonance frequency analysis
+      if (selectedMode === 'resonance' && sessionData.length >= 5) {
+        const rates = ['6.5', '6.0', '5.5', '5.0', '4.5'];
+        const results = sessionData.map((phase, i) => {
+          const hrs = phase.readings.map(r => r.hr).filter(h => h > 0);
+          const rmssd = phase.readings.map(r => r.rmssd).filter(r => r > 0);
+          // HR oscillation amplitude = max - min HR (proxy for RSA amplitude)
+          const hrSwing = hrs.length > 10 ? Math.max(...hrs) - Math.min(...hrs) : 0;
+          const avgRmssd = rmssd.length > 0 ? rmssd.reduce((a,b)=>a+b,0)/rmssd.length : 0;
+          return { rate: rates[i], hrSwing, rmssd: avgRmssd };
+        });
+
+        // find the winner
+        const best = results.reduce((a, b) => b.hrSwing > a.hrSwing ? b : a);
+
+        html += '<h3 style="color:#4aafff;font-size:16px;margin:24px 0 12px;font-weight:normal">Your Resonance Frequency</h3>';
+        html += `<div style="text-align:center;margin:16px 0">
+          <div style="font-size:48px;color:#fff;font-variant-numeric:tabular-nums">${best.rate} <span style="font-size:20px;color:#888">bpm</span></div>
+          <div style="font-size:13px;color:#666">HR swing: ${best.hrSwing} bpm · RMSSD: ${best.rmssd.toFixed(1)}ms</div>
+        </div>`;
+
+        html += '<table><tr><th>rate</th><th>HR swing</th><th>RMSSD</th><th></th></tr>';
+        for (const r of results) {
+          const winner = r.rate === best.rate;
+          const bar = '█'.repeat(Math.round(r.hrSwing / 2));
+          html += `<tr style="${winner ? 'color:#4aafff' : ''}">
+            <td>${r.rate} bpm</td>
+            <td>${r.hrSwing} bpm ${bar}</td>
+            <td>${r.rmssd.toFixed(1)}ms</td>
+            <td>${winner ? '← best' : ''}</td>
+          </tr>`;
+        }
+        html += '</table>';
+
+        const inhale = (60 / parseFloat(best.rate) / 2).toFixed(1);
+        html += `<div style="background:#0e0e14;border-left:3px solid #4aafff;padding:14px 18px;margin:16px 0;border-radius:0 6px 6px 0">
+          <p style="font-size:13px;color:#aaa">Practice at <strong style="color:#fff">${best.rate} bpm</strong> — ${inhale}s inhale, ${inhale}s exhale. Use the coherence page with this pattern.</p>
+          <p style="font-size:11px;color:#555;margin-top:6px">Note: RF can shift with fitness and stress. Re-test monthly.</p>
+        </div>`;
+
+        say(`Your resonance frequency is ${best.rate} breaths per minute. Heart rate swing was ${best.hrSwing} beats. Practice at this rate for maximum vagal training effect.`);
       }
 
       html += '<button onclick="location.reload()" style="margin-top:20px;font:13px monospace;background:#1a1a22;border:1px solid #333;color:#ccc;padding:8px 20px;border-radius:4px;cursor:pointer">new assessment</button>';
