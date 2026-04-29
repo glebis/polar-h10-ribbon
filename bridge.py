@@ -272,10 +272,18 @@ async def read_device_info(client: BleakClient) -> dict:
     }
 
 
+_target_serial = None  # set via CLI to pick a specific strap
+
 async def run_sensor() -> None:
     print("scanning for Polar H10 (10s)…")
     devices = await BleakScanner.discover(timeout=10.0)
-    device = next((d for d in devices if d.name and "Polar H10" in d.name), None)
+    polars = [d for d in devices if d.name and "Polar H10" in d.name]
+    if _target_serial:
+        device = next((d for d in polars if _target_serial in (d.name or '')), None)
+        if not device:
+            device = next((d for d in polars if _target_serial in d.address), None)
+    else:
+        device = polars[0] if polars else None
     if not device:
         names = ", ".join(sorted({d.name for d in devices if d.name})) or "(none)"
         raise RuntimeError(f"Polar H10 not found. Saw: {names}. Wet the electrodes, strap on chest.")
@@ -359,9 +367,11 @@ async def run_sensor() -> None:
         print(f"\nsession #{session_id} closed")
 
 
+_ws_port = 8765
+
 async def main() -> None:
-    server = await websockets.serve(ws_handler, "localhost", 8765)
-    print("ws://localhost:8765")
+    server = await websockets.serve(ws_handler, "localhost", _ws_port)
+    print(f"ws://localhost:{_ws_port}")
     try:
         await run_sensor()
     finally:
@@ -370,4 +380,12 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Polar H10 BLE → WebSocket bridge")
+    parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default 8765)")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Target device serial or name substring (e.g. '1534913A')")
+    args = parser.parse_args()
+    _ws_port = args.port
+    _target_serial = args.device
     asyncio.run(main())
