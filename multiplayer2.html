@@ -863,22 +863,36 @@ canvas { display:block; position:fixed; inset:0; }
       const maxR = Math.min(W, H) * 0.18;
       const ringR = minR + (maxR - minR) * eased;
 
-      ctx.strokeStyle = isInhale ? 'rgba(108,197,230,0.2)' : 'rgba(230,178,108,0.2)';
-      ctx.lineWidth = 2;
+      // bright ring — visible on projectors and dim screens
+      const inhaleColor = [108, 197, 230];
+      const exhaleColor = [230, 178, 108];
+      const c = isInhale ? inhaleColor : exhaleColor;
+
+      // filled circle background
+      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${0.04 + eased * 0.06})`;
+      ctx.beginPath();
+      ctx.arc(W/2, H/2, ringR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // main ring — thick and bright
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.6)`;
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(W/2, H/2, ringR, 0, Math.PI * 2);
       ctx.stroke();
 
-      // soft glow
-      ctx.strokeStyle = isInhale ? 'rgba(108,197,230,0.06)' : 'rgba(230,178,108,0.06)';
-      ctx.lineWidth = 12;
+      // outer glow
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.15)`;
+      ctx.lineWidth = 20;
       ctx.stroke();
 
-      // text
+      // text — large, bright
       const breathEl = document.getElementById('breath-text');
       const secs = isInhale ? (halfCycle - cyclePos) : (cycleDuration - cyclePos);
-      breathEl.textContent = `${isInhale ? 'in' : 'out'} ${Math.ceil(secs)}`;
-      breathEl.style.color = isInhale ? 'rgba(108,197,230,0.35)' : 'rgba(230,178,108,0.35)';
+      breathEl.textContent = `${isInhale ? 'in' : 'out'}\n${Math.ceil(secs)}`;
+      breathEl.style.color = `rgba(${c[0]},${c[1]},${c[2]},0.7)`;
+      breathEl.style.fontSize = '28px';
+      breathEl.style.whiteSpace = 'pre';
 
       // breathing affects gravity — inhale lifts, exhale settles
       if (cfg.gravity > 0) {
