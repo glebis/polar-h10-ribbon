@@ -97,29 +97,58 @@ canvas { display:block; position:fixed; inset:0; }
     const impact = Math.min(1, speed / 8);
     if (impact < 0.1) return;
 
+    // gravity affects pitch: heavier gravity = lower sounds
+    const gravPitch = 1 + (1 - cfg.gravity) * 0.5; // low gravity = higher pitch
+    // attraction affects sustain: more attraction = longer, more reverb-like
+    const attractSustain = 1 + cfg.attract * 3;
+
     if (isWall) {
-      // floor/wall: short thud
+      // floor/wall: thud — pitch from gravity
       const osc = audioCtx.createOscillator();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(50 + impact * 40, now);
-      osc.frequency.exponentialRampToValueAtTime(25, now + 0.1);
+      osc.frequency.setValueAtTime((40 + impact * 30) * gravPitch, now);
+      osc.frequency.exponentialRampToValueAtTime(20 * gravPitch, now + 0.12);
       const g = audioCtx.createGain();
-      g.gain.setValueAtTime(impact * 0.05, now);
-      g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      g.gain.setValueAtTime(impact * 0.06, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.1 * attractSustain);
       osc.connect(g); g.connect(masterGain);
-      osc.start(now); osc.stop(now + 0.15);
+      osc.start(now); osc.stop(now + 0.15 * attractSustain);
+
+      // high gravity = add sub-bass rumble
+      if (cfg.gravity > 0.5) {
+        const sub = audioCtx.createOscillator();
+        sub.type = 'sine';
+        sub.frequency.value = 25;
+        const sg = audioCtx.createGain();
+        sg.gain.setValueAtTime(impact * 0.03 * cfg.gravity, now);
+        sg.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        sub.connect(sg); sg.connect(masterGain);
+        sub.start(now); sub.stop(now + 0.15);
+      }
     } else {
-      // particle-particle: tink from current scale
+      // particle-particle: tuned note — attraction affects harmony
       const semitone = SCALE[Math.floor(Math.random() * SCALE.length)];
-      const freq = ROOT * Math.pow(2, (semitone + 12) / 12);
+      const freq = ROOT * Math.pow(2, (semitone + 12) / 12) * gravPitch;
       const osc = audioCtx.createOscillator();
-      osc.type = 'sine';
+      osc.type = cfg.attract > 0.6 ? 'sine' : 'triangle'; // more attraction = purer tone
       osc.frequency.value = freq;
       const g = audioCtx.createGain();
-      g.gain.setValueAtTime(impact * 0.02, now);
-      g.gain.exponentialRampToValueAtTime(0.001, now + 0.15 + impact * 0.2);
+      g.gain.setValueAtTime(impact * 0.025, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.1 * attractSustain);
       osc.connect(g); g.connect(masterGain);
-      osc.start(now); osc.stop(now + 0.4);
+      osc.start(now); osc.stop(now + 0.15 * attractSustain);
+
+      // high attraction: add consonant harmony (fifth above)
+      if (cfg.attract > 0.3 && Math.random() < cfg.attract) {
+        const h = audioCtx.createOscillator();
+        h.type = 'sine';
+        h.frequency.value = freq * 1.5;
+        const hg = audioCtx.createGain();
+        hg.gain.setValueAtTime(impact * 0.01 * cfg.attract, now + 0.01);
+        hg.gain.exponentialRampToValueAtTime(0.001, now + 0.2 * attractSustain);
+        h.connect(hg); hg.connect(masterGain);
+        h.start(now + 0.01); h.stop(now + 0.25 * attractSustain);
+      }
     }
   }
 
