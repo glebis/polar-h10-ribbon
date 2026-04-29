@@ -540,12 +540,17 @@ class BuzzerLED:
                 self.press_count = 0
                 self._trigger_dictation()
 
+    recording = False
+
     def _trigger_dictation(self):
-        print("\n  buzzer double-press → dictation")
+        self.recording = not self.recording
+        print(f"\n  buzzer double-press → {'recording' if self.recording else 'stopped'}")
         subprocess.Popen(
             ["cliclick", "kd:shift", "kd:alt", "t:d", "ku:alt", "ku:shift"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
+        if self.recording:
+            self._recording_start = time.time()
 
     def set_rgb(self, r: int, g: int, b: int):
         if not self.available:
@@ -764,23 +769,28 @@ async def run(args):
                                 mod_bri = min(0.95, mod_bri + mv * 0.15)
 
                             if buzzer_ok:
-                                # buzzer is small LEDs — needs to be BRIGHT
-                                # heartbeat: flash to full white, then decay to color
-                                beat_age = now - hue.last_beat_time if hue_ok else 1
-                                buzz_flash = math.exp(-beat_age * 4) * args.heartbeat if beat_age < 1.5 else 0
-
-                                if buzz_flash > 0.3:
-                                    # during flash: bright white-tinted burst
-                                    br = int(min(255, 200 + buzz_flash * 55))
-                                    bg = int(min(255, 100 + buzz_flash * 100))
-                                    bb = int(min(255, 80 + buzz_flash * 80))
+                                if buzzer.recording:
+                                    # pulsating red during dictation
+                                    rec_age = now - buzzer._recording_start
+                                    pulse = (math.sin(rec_age * 4) + 1) / 2  # ~0.6 Hz pulse
+                                    br = int(80 + pulse * 175)
+                                    bg = int(pulse * 15)
+                                    bb = int(pulse * 10)
                                 else:
-                                    # resting: bright base color (minimum 100 RGB)
-                                    r, g, b = light.rgb
-                                    scale = max(1, 120 / max(r, g, b, 1))
-                                    br = int(min(255, r * scale))
-                                    bg = int(min(255, g * scale))
-                                    bb = int(min(255, b * scale))
+                                    # normal: heartbeat flash + base color
+                                    beat_age = now - hue.last_beat_time if hue_ok else 1
+                                    buzz_flash = math.exp(-beat_age * 4) * args.heartbeat if beat_age < 1.5 else 0
+
+                                    if buzz_flash > 0.3:
+                                        br = int(min(255, 200 + buzz_flash * 55))
+                                        bg = int(min(255, 100 + buzz_flash * 100))
+                                        bb = int(min(255, 80 + buzz_flash * 80))
+                                    else:
+                                        r, g, b = light.rgb
+                                        scale = max(1, 120 / max(r, g, b, 1))
+                                        br = int(min(255, r * scale))
+                                        bg = int(min(255, g * scale))
+                                        bb = int(min(255, b * scale))
                                 buzzer.set_rgb(br, bg, bb)
 
                             r, g, b = light.rgb
