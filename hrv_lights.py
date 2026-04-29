@@ -542,17 +542,10 @@ class BuzzerLED:
 
     def _trigger_dictation(self):
         print("\n  buzzer double-press → dictation")
-        # Method 1: activate Wispr Flow directly
-        subprocess.Popen([
-            "osascript", "-e",
-            'tell application "Wispr Flow" to activate',
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # Method 2: also send fn key as backup
-        time.sleep(0.1)
-        subprocess.Popen([
-            "osascript", "-e",
-            'tell application "System Events" to key code 63',
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["cliclick", "kd:shift", "kd:alt", "t:d", "ku:alt", "ku:shift"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
 
     def set_rgb(self, r: int, g: int, b: int):
         if not self.available:
