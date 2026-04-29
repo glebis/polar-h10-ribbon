@@ -52,6 +52,17 @@ canvas { display:block; position:fixed; inset:0; }
 
 <div id="mixer"></div>
 
+<div id="config" style="display:none;position:fixed;top:40px;left:16px;background:rgba(5,5,8,0.92);
+  border:1px solid #1a1a22;border-radius:6px;padding:14px 18px;z-index:30;font-size:11px;width:260px;
+  backdrop-filter:blur(8px)">
+  <div style="color:#555;margin-bottom:8px">CONFIG (Shift+.)</div>
+  <label>attraction <input type="range" id="cfg-attract" min="0" max="100" value="40" style="width:120px;vertical-align:middle"> <span id="cfg-attract-v">0.4</span></label><br>
+  <label>gravity <input type="range" id="cfg-gravity" min="0" max="100" value="30" style="width:120px;vertical-align:middle"> <span id="cfg-gravity-v">0.3</span></label><br>
+  <label>particle life <input type="range" id="cfg-life" min="10" max="200" value="100" style="width:120px;vertical-align:middle"> <span id="cfg-life-v">1.0</span></label><br>
+  <label>volume <input type="range" id="cfg-vol" min="0" max="100" value="30" style="width:120px;vertical-align:middle"> <span id="cfg-vol-v">0.3</span></label><br>
+  <label>particle count <input type="range" id="cfg-count" min="1" max="30" value="8" style="width:120px;vertical-align:middle"> <span id="cfg-count-v">8</span></label>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
 <script>
 (function(){
@@ -416,6 +427,31 @@ canvas { display:block; position:fixed; inset:0; }
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   });
 
+  // ── Config panel ──
+  const cfg = { attract: 0.4, gravity: 0.3, lifeMul: 1.0, vol: 0.3, countMul: 1.0 };
+  let configVisible = false;
+
+  function setupConfig() {
+    const binds = [
+      ['cfg-attract', 'attract', 100],
+      ['cfg-gravity', 'gravity', 100],
+      ['cfg-life', 'lifeMul', 100],
+      ['cfg-vol', 'vol', 100],
+      ['cfg-count', 'countMul', 10],
+    ];
+    for (const [id, key, div] of binds) {
+      const el = document.getElementById(id);
+      const vEl = document.getElementById(id + '-v');
+      el.oninput = () => {
+        cfg[key] = el.value / div;
+        vEl.textContent = cfg[key].toFixed(1);
+        if (key === 'gravity') engine.gravity.y = cfg.gravity;
+        if (key === 'vol' && masterGain) masterGain.gain.value = cfg.vol;
+      };
+    }
+  }
+  setupConfig();
+
   // ── Render ──
   function render() {
     requestAnimationFrame(render);
@@ -430,6 +466,28 @@ canvas { display:block; position:fixed; inset:0; }
     Body.setPosition(walls[0], { x: W/2, y: H + 25 });
     Body.setPosition(walls[1], { x: W/2, y: -25 });
     Body.setPosition(walls[3], { x: W + 25, y: H/2 });
+
+    // ── Inter-participant attraction ──
+    if (cfg.attract > 0) {
+      const owners = [...new Set(matterParticles.map(p => p.owner))];
+      if (owners.length >= 2) {
+        for (const p of matterParticles) {
+          for (const q of matterParticles) {
+            if (p.owner === q.owner) continue;
+            if (Math.random() > 0.05) continue; // sample 5% of pairs for perf
+            const dx = q.body.position.x - p.body.position.x;
+            const dy = q.body.position.y - p.body.position.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < 10 || dist > 300) continue;
+            const force = cfg.attract * 0.00002 / (dist * 0.01);
+            Body.applyForce(p.body, p.body.position, {
+              x: dx / dist * force,
+              y: dy / dist * force,
+            });
+          }
+        }
+      }
+    }
 
     // draw + cull particles
     for (let i = matterParticles.length - 1; i >= 0; i--) {
@@ -470,6 +528,29 @@ canvas { display:block; position:fixed; inset:0; }
       ctx.fill();
     }
 
+    // draw attraction threads between nearby particles of different owners
+    if (cfg.attract > 0.1) {
+      ctx.lineWidth = 0.5;
+      for (let i = 0; i < matterParticles.length; i += 3) { // sample for perf
+        const p = matterParticles[i];
+        const pPos = p.body.position;
+        for (let j = i + 1; j < matterParticles.length; j += 3) {
+          const q = matterParticles[j];
+          if (p.owner === q.owner) continue;
+          const qPos = q.body.position;
+          const dx = qPos.x - pPos.x, dy = qPos.y - pPos.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist > 100) continue;
+          const alpha = (1 - dist / 100) * 0.12 * cfg.attract;
+          ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+          ctx.beginPath();
+          ctx.moveTo(pPos.x, pPos.y);
+          ctx.lineTo(qPos.x, qPos.y);
+          ctx.stroke();
+        }
+      }
+    }
+
     // draw participant spawn zones
     for (const [pid, p] of Object.entries(participants)) {
       ctx.fillStyle = p.color + '08';
@@ -489,6 +570,10 @@ canvas { display:block; position:fixed; inset:0; }
   // keyboard
   document.addEventListener('keydown', (e) => {
     if (e.key === 'f' || e.key === 'F') document.documentElement.requestFullscreen().catch(()=>{});
+    if (e.key === '>' || (e.shiftKey && e.key === '.')) {
+      configVisible = !configVisible;
+      document.getElementById('config').style.display = configVisible ? 'block' : 'none';
+    }
   });
 })();
 </script>
