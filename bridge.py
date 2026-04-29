@@ -353,9 +353,12 @@ async def run_sensor() -> None:
         await client.write_gatt_char(PMD_CONTROL, START_ACC, response=True)
         print("streaming HR + ECG(130Hz) + ACC(50Hz) + battery — open http://localhost:8080")
 
-        while client.is_connected:
-            await asyncio.sleep(1)
-            rr_logger.flush()  # periodic flush
+        try:
+            while client.is_connected:
+                await asyncio.sleep(1)
+                rr_logger.flush()
+        except Exception as e:
+            print(f"\n  BLE error during streaming: {e}")
 
         # flush remaining on disconnect
         rr_logger.flush()
@@ -364,19 +367,32 @@ async def run_sensor() -> None:
                    (datetime.now(timezone.utc).isoformat(), session_id))
         db.commit()
         db.close()
-        print(f"\nsession #{session_id} closed")
+        print(f"\nsession #{session_id} closed — will reconnect")
 
 
 _ws_port = 8765
 
 async def main() -> None:
-    server = await websockets.serve(ws_handler, "localhost", _ws_port)
+    server = await websockets.serve(ws_handler, "0.0.0.0", _ws_port)
     print(f"ws://localhost:{_ws_port}")
-    try:
-        await run_sensor()
-    finally:
-        server.close()
-        await server.wait_closed()
+    print("auto-reconnect enabled — will retry on BLE disconnect\n")
+
+    while True:
+        try:
+            await run_sensor()
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            err = str(e)
+            if "not found" in err.lower():
+                print(f"\n  strap not found — scanning again in 15s…")
+                await asyncio.sleep(15)
+            else:
+                print(f"\n  BLE disconnected ({err}) — reconnecting in 5s…")
+                await asyncio.sleep(5)
+
+    server.close()
+    await server.wait_closed()
 
 
 if __name__ == "__main__":
