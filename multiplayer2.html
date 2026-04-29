@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Multiplayer Heartbeat v2</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; overflow:hidden; background:#050505;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; color:#999; }
+canvas { display:block; position:fixed; inset:0; }
+
+#mixer { position:fixed; bottom:0; left:0; right:0; background:rgba(5,5,8,0.92);
+  border-top:1px solid #1a1a22; padding:10px 16px; display:flex; gap:12px;
+  align-items:center; z-index:20; backdrop-filter:blur(8px); }
+.channel { flex:1; max-width:200px; background:#0e0e12; border:1px solid #1a1a22;
+  border-radius:6px; padding:10px 12px; cursor:pointer; transition:border-color 0.2s; }
+.channel:hover { border-color:#333; }
+.channel.muted { opacity:0.3; }
+.channel.solo { border-color:#e6b26c; }
+.ch-name { font-size:12px; color:#ccc; cursor:text; }
+.ch-name:focus { outline:none; color:#fff; }
+.ch-hr { font-size:20px; color:#fff; font-variant-numeric:tabular-nums; margin:4px 0; }
+.ch-instrument { font-size:10px; color:#555; text-transform:uppercase; letter-spacing:0.1em; }
+.ch-btns { display:flex; gap:4px; margin-top:6px; }
+.ch-btn { font:9px monospace; padding:2px 6px; border-radius:2px; cursor:pointer; border:1px solid #333; background:none; color:#666; }
+.ch-btn:hover { border-color:#666; color:#ccc; }
+.ch-btn.active { background:#333; color:#fff; }
+.ch-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+
+#sync-bar { position:fixed; top:12px; left:50%; transform:translateX(-50%);
+  width:200px; height:4px; border-radius:2px; background:rgba(255,255,255,0.05); z-index:10; }
+#sync-fill { height:100%; width:0; border-radius:2px; background:rgba(255,255,255,0.4); transition:width 0.3s; }
+#sync-label { position:fixed; top:20px; left:50%; transform:translateX(-50%);
+  font-size:10px; color:rgba(255,255,255,0.2); z-index:10; }
+
+#preset-bar { position:fixed; top:12px; right:16px; display:flex; gap:6px; z-index:10; }
+.preset-btn { font:10px monospace; padding:3px 8px; border-radius:3px; cursor:pointer;
+  border:1px solid #222; background:none; color:#555; }
+.preset-btn:hover { border-color:#555; color:#ccc; }
+.preset-btn.active { border-color:#e6b26c; color:#e6b26c; }
+</style>
+</head><body>
+
+<canvas id="c"></canvas>
+<div id="sync-bar"><div id="sync-fill"></div></div>
+<div id="sync-label">sync —</div>
+
+<div id="preset-bar">
+  <button class="preset-btn active" data-preset="ambient">ambient</button>
+  <button class="preset-btn" data-preset="rhythmic">rhythmic</button>
+  <button class="preset-btn" data-preset="melodic">melodic</button>
+  <button class="preset-btn" data-preset="full">full</button>
+</div>
+
+<div id="mixer"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+<script>
+(function(){
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const dpr = Math.min(devicePixelRatio, 2);
+  let W, H;
+
+  function resize() {
+    W = innerWidth; H = innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize(); addEventListener('resize', resize);
+
+  // ── Matter.js physics ──
+  const Engine = Matter.Engine, World = Matter.World, Bodies = Matter.Bodies, Body = Matter.Body;
+  const engine = Engine.create({ gravity: { x: 0, y: 0.3 } });
+  const world = engine.world;
+
+  // walls
+  const wallOpts = { isStatic: true, render: { visible: false }, restitution: 0.6 };
+  const walls = [
+    Bodies.rectangle(W/2, H + 25, W + 100, 50, wallOpts),
+    Bodies.rectangle(W/2, -25, W + 100, 50, wallOpts),
+    Bodies.rectangle(-25, H/2, 50, H + 100, wallOpts),
+    Bodies.rectangle(W + 25, H/2, 50, H + 100, wallOpts),
+  ];
+  World.add(world, walls);
+
+  // particles linked to physics bodies
+  const matterParticles = []; // { body, owner, type, born, maxLife, color, size }
+  const MAX_PARTICLES = 400;
+
+  function spawnBeat(pid, x, y, color, count, instrumentType) {
+    for (let i = 0; i < count && matterParticles.length < MAX_PARTICLES; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 6;
+      const size = instrumentType === 'bass' ? 6 + Math.random() * 8 :
+                   instrumentType === 'perc' ? 2 + Math.random() * 3 :
+                   3 + Math.random() * 5;
+      const life = instrumentType === 'bass' ? 8 + Math.random() * 6 :
+                   instrumentType === 'perc' ? 2 + Math.random() * 3 :
+                   4 + Math.random() * 5;
+
+      const body = Bodies.circle(x + (Math.random()-0.5)*20, y + (Math.random()-0.5)*20, size, {
+        restitution: 0.7, friction: 0.01, frictionAir: 0.005,
+        density: instrumentType === 'bass' ? 0.005 : 0.001,
+      });
+      Body.setVelocity(body, { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed - 3 });
+      World.add(world, body);
+
+      matterParticles.push({
+        body, owner: pid, type: instrumentType,
+        born: performance.now() / 1000, maxLife: life,
+        color, size,
+      });
+    }
+  }
+
+  // ── Audio ──
+  let audioCtx = null;
+  let masterGain = null;
+  let currentPreset = 'ambient';
+
+  const INSTRUMENTS = {
+    bass:  { wave: 'sine',     octave: -1, attack: 0.01, decay: 0.4, vol: 0.08 },
+    pad:   { wave: 'sine',     octave: 0,  attack: 0.1,  decay: 1.5, vol: 0.04 },
+    lead:  { wave: 'triangle', octave: 1,  attack: 0.005,decay: 0.3, vol: 0.05 },
+    perc:  { wave: 'sawtooth', octave: 2,  attack: 0.002,decay: 0.08,vol: 0.03 },
+    bell:  { wave: 'sine',     octave: 2,  attack: 0.001,decay: 0.6, vol: 0.03 },
+    string:{ wave: 'sawtooth', octave: 0,  attack: 0.05, decay: 0.8, vol: 0.04 },
+  };
+  const INSTRUMENT_NAMES = Object.keys(INSTRUMENTS);
+
+  const SCALE = [0, 2, 4, 5, 7, 9, 11]; // major scale semitones
+  const ROOT = 130.81; // C3
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.3;
+    // reverb
+    const convolver = audioCtx.createConvolver();
+    const len = audioCtx.sampleRate * 2;
+    const ir = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.exp(-i/(len*0.12));
+    }
+    convolver.buffer = ir;
+    const reverbGain = audioCtx.createGain();
+    reverbGain.gain.value = 0.15;
+    masterGain.connect(audioCtx.destination);
+    masterGain.connect(convolver);
+    convolver.connect(reverbGain);
+    reverbGain.connect(audioCtx.destination);
+  }
+
+  function playInstrumentNote(instrument, noteIdx, sync, velocity) {
+    if (!audioCtx) return;
+    const inst = INSTRUMENTS[instrument];
+    if (!inst) return;
+    const t = audioCtx.currentTime;
+    const semitone = SCALE[noteIdx % SCALE.length] + 12 * inst.octave;
+    const freq = ROOT * Math.pow(2, semitone / 12);
+
+    const osc = audioCtx.createOscillator();
+    osc.type = inst.wave;
+    osc.frequency.value = freq;
+
+    const gain = audioCtx.createGain();
+    const vol = inst.vol * velocity;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(vol, t + inst.attack);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + inst.attack + inst.decay);
+
+    // filter based on preset
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = currentPreset === 'ambient' ? 800 + sync * 2000 :
+                           currentPreset === 'melodic' ? 2000 + sync * 4000 : 4000;
+    filt.Q.value = currentPreset === 'rhythmic' ? 4 : 1;
+
+    osc.connect(filt); filt.connect(gain); gain.connect(masterGain);
+    osc.start(t); osc.stop(t + inst.attack + inst.decay + 0.1);
+
+    // percussion: add noise hit
+    if (instrument === 'perc' && (currentPreset === 'rhythmic' || currentPreset === 'full')) {
+      const dur = 0.03;
+      const bufLen = Math.floor(audioCtx.sampleRate * dur);
+      const buf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < bufLen; i++) d[i] = (Math.random()*2-1)*Math.exp(-i/(bufLen*0.05));
+      const src = audioCtx.createBufferSource(); src.buffer = buf;
+      const hp = audioCtx.createBiquadFilter();
+      hp.type = 'highpass'; hp.frequency.value = 6000;
+      const ng = audioCtx.createGain();
+      ng.gain.setValueAtTime(0.04 * velocity, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+      src.connect(hp); hp.connect(ng); ng.connect(masterGain);
+      src.start(t); src.stop(t + dur + 0.01);
+    }
+  }
+
+  // ── Participants ──
+  const participants = {};
+  let syncValue = 0;
+
+  function ensureParticipant(pid, data) {
+    if (!participants[pid]) {
+      const idx = Object.keys(participants).length;
+      participants[pid] = {
+        ...data,
+        instrument: INSTRUMENT_NAMES[idx % INSTRUMENT_NAMES.length],
+        muted: false,
+        solo: false,
+        noteIndex: 0,
+        spawnX: W * (0.25 + idx * 0.5 / Math.max(1, Object.keys(participants).length)),
+        clickCount: 0,
+        lastClick: 0,
+      };
+      rebuildMixer();
+    }
+    Object.assign(participants[pid], data);
+  }
+
+  // ── Mixer UI ──
+  function rebuildMixer() {
+    const mixer = document.getElementById('mixer');
+    mixer.innerHTML = '';
+    const hasSolo = Object.values(participants).some(p => p.solo);
+
+    for (const [pid, p] of Object.entries(participants)) {
+      const ch = document.createElement('div');
+      ch.className = 'channel' + (p.muted ? ' muted' : '') + (p.solo ? ' solo' : '');
+      ch.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="ch-dot" style="background:${p.color}"></span>
+          <span class="ch-name" contenteditable="true" data-pid="${pid}">${p.name}</span>
+        </div>
+        <div class="ch-hr" id="hr-${pid}">${p.bpm || '—'}</div>
+        <div class="ch-instrument" data-pid="${pid}">${p.instrument}</div>
+        <div class="ch-btns">
+          <button class="ch-btn ${p.muted ? 'active' : ''}" data-action="mute" data-pid="${pid}">M</button>
+          <button class="ch-btn ${p.solo ? 'active' : ''}" data-action="solo" data-pid="${pid}">S</button>
+          <button class="ch-btn" data-action="instrument" data-pid="${pid}">▸</button>
+        </div>
+      `;
+
+      // click on channel body to change instrument
+      ch.addEventListener('dblclick', (e) => {
+        if (e.target.contentEditable === 'true') return;
+        const idx = INSTRUMENT_NAMES.indexOf(p.instrument);
+        p.instrument = INSTRUMENT_NAMES[(idx + 1) % INSTRUMENT_NAMES.length];
+        rebuildMixer();
+      });
+
+      mixer.appendChild(ch);
+    }
+
+    // button handlers
+    mixer.querySelectorAll('.ch-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const pid = btn.dataset.pid;
+        const p = participants[pid];
+        if (btn.dataset.action === 'mute') {
+          p.muted = !p.muted;
+        } else if (btn.dataset.action === 'solo') {
+          p.solo = !p.solo;
+        } else if (btn.dataset.action === 'instrument') {
+          const idx = INSTRUMENT_NAMES.indexOf(p.instrument);
+          p.instrument = INSTRUMENT_NAMES[(idx + 1) % INSTRUMENT_NAMES.length];
+        }
+        rebuildMixer();
+      };
+    });
+
+    // rename handlers
+    mixer.querySelectorAll('.ch-name').forEach(el => {
+      el.onblur = () => {
+        const pid = el.dataset.pid;
+        if (participants[pid]) participants[pid].name = el.textContent.trim() || 'anon';
+      };
+      el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } };
+    });
+  }
+
+  function isAudible(pid) {
+    const p = participants[pid];
+    if (!p) return false;
+    if (p.muted) return false;
+    const hasSolo = Object.values(participants).some(pp => pp.solo);
+    if (hasSolo && !p.solo) return false;
+    return true;
+  }
+
+  // ── Preset buttons ──
+  document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPreset = btn.dataset.preset;
+    };
+  });
+
+  // ── WebSocket ──
+  let ws = null;
+  function connect() {
+    ws = new WebSocket('ws://localhost:9000');
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'view' }));
+      initAudio();
+    };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type !== 'state') return;
+
+      syncValue = msg.sync || 0;
+      document.getElementById('sync-fill').style.width = (syncValue * 100) + '%';
+      document.getElementById('sync-label').textContent = `sync ${(syncValue * 100).toFixed(0)}%`;
+
+      for (const [pid, data] of Object.entries(msg.participants || {})) {
+        const prevBeat = participants[pid] ? participants[pid].lastBeat : null;
+        ensureParticipant(pid, data);
+        const p = participants[pid];
+
+        // update HR display
+        const hrEl = document.getElementById('hr-' + pid);
+        if (hrEl) hrEl.textContent = p.bpm;
+
+        // detect new beat
+        if (data.lastBeat && data.lastBeat !== prevBeat) {
+          // spawn particles
+          const count = p.instrument === 'bass' ? 5 : p.instrument === 'perc' ? 12 : 8;
+          spawnBeat(pid, p.spawnX, H * 0.4, p.color, count, p.instrument);
+
+          // play note
+          if (isAudible(pid)) {
+            p.noteIndex = (p.noteIndex + 1) % (SCALE.length * 2);
+            playInstrumentNote(p.instrument, p.noteIndex, syncValue, 0.8 + syncValue * 0.4);
+          }
+        }
+      }
+    };
+    ws.onclose = () => setTimeout(connect, 2000);
+    ws.onerror = () => ws.close();
+  }
+  connect();
+
+  // ── Click interactions ──
+  canvas.addEventListener('click', (e) => {
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  });
+
+  // ── Render ──
+  function render() {
+    requestAnimationFrame(render);
+    Engine.update(engine, 1000 / 60);
+
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, W, H);
+
+    const now = performance.now() / 1000;
+
+    // update walls on resize
+    Body.setPosition(walls[0], { x: W/2, y: H + 25 });
+    Body.setPosition(walls[1], { x: W/2, y: -25 });
+    Body.setPosition(walls[3], { x: W + 25, y: H/2 });
+
+    // draw + cull particles
+    for (let i = matterParticles.length - 1; i >= 0; i--) {
+      const p = matterParticles[i];
+      const age = now - p.born;
+      if (age > p.maxLife || p.body.position.y > H + 50) {
+        World.remove(world, p.body);
+        matterParticles.splice(i, 1);
+        continue;
+      }
+
+      const lifeFrac = 1 - age / p.maxLife;
+      const eased = 1 - Math.pow(1 - lifeFrac, 3);
+      const alpha = eased * 0.6;
+      const size = p.size * (0.4 + eased * 0.6);
+      const pos = p.body.position;
+
+      // parse hex color
+      const hex = p.color || '#ffffff';
+      const r = parseInt(hex.slice(1,3), 16);
+      const g = parseInt(hex.slice(3,5), 16);
+      const b = parseInt(hex.slice(5,7), 16);
+
+      // glow for bass
+      if (p.type === 'bass' && size > 4) {
+        const grad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, size * 3);
+        grad.addColorStop(0, `rgba(${r},${g},${b},${alpha * 0.2})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, size * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+      ctx.fill();
+    }
+
+    // draw participant spawn zones
+    for (const [pid, p] of Object.entries(participants)) {
+      ctx.fillStyle = p.color + '08';
+      ctx.beginPath();
+      ctx.arc(p.spawnX, H * 0.4, 60, 0, Math.PI * 2);
+      ctx.fill();
+
+      // name label
+      ctx.fillStyle = p.color + '40';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.name, p.spawnX, H * 0.4 + 80);
+    }
+  }
+  render();
+
+  // keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') document.documentElement.requestFullscreen().catch(()=>{});
+  });
+})();
+</script>
+</body></html>
