@@ -1,9 +1,113 @@
-"""Polar H10 -> WebSocket bridge. Streams HR, ECG (130 Hz), and ACC (50 Hz)."""
+"""Polar H10 -> WebSocket bridge. Streams HR, ECG (130 Hz), and ACC (50 Hz).
+Also writes RR intervals to SQLite with device ID tracking."""
 import asyncio
 import json
+import os
+import sqlite3
 import struct
+import time
+from pathlib import Path
 from bleak import BleakClient, BleakScanner
 import websockets
+
+DB_PATH = Path(__file__).parent / "hrv_data.db"
+
+
+# ── SQLite live logging ─────────────────────────────────────────────────
+
+def init_db():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS devices (
+        id INTEGER PRIMARY KEY,
+        serial TEXT UNIQUE NOT NULL,
+        name TEXT,
+        manufacturer TEXT,
+        model TEXT,
+        firmware TEXT,
+        hardware TEXT,
+        address TEXT,
+        first_seen REAL,
+        last_seen REAL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        notes TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS rr_intervals (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL,
+        ts REAL NOT NULL,
+        rr_ms INTEGER NOT NULL,
+        hr_bpm INTEGER,
+        device_id INTEGER,
+        FOREIGN KEY (session_id) REFERENCES sessions(id),
+        FOREIGN KEY (device_id) REFERENCES devices(id)
+    )""")
+    # add device_id column if missing (existing databases)
+    try:
+        conn.execute("SELECT device_id FROM rr_intervals LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE rr_intervals ADD COLUMN device_id INTEGER")
+    conn.commit()
+    return conn
+
+
+def get_or_create_device(conn, info, address):
+    serial = info.get("serial") or address
+    row = conn.execute("SELECT id FROM devices WHERE serial = ?", (serial,)).fetchone()
+    now = time.time()
+    if row:
+        conn.execute("UPDATE devices SET last_seen = ?, address = ? WHERE id = ?",
+                     (now, address, row[0]))
+        conn.commit()
+        return row[0]
+    conn.execute("""INSERT INTO devices (serial, name, manufacturer, model, firmware, hardware, address, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (serial, info.get("name"), info.get("manufacturer"), info.get("model"),
+                  info.get("firmware"), info.get("hardware"), address, now, now))
+    conn.commit()
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def create_session(conn, device_id, device_name):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO sessions (started_at, notes) VALUES (?, ?)",
+                 (now, f"Live bridge · device {device_name}"))
+    conn.commit()
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+class RRLogger:
+    """Buffers RR intervals and flushes to SQLite in batches."""
+    def __init__(self, conn, session_id, device_id):
+        self.conn = conn
+        self.session_id = session_id
+        self.device_id = device_id
+        self.buffer = []
+        self.flush_interval = 5.0
+        self.last_flush = time.time()
+
+    def add(self, hr, rr_list):
+        now = time.time()
+        for rr in rr_list:
+            if 200 < rr < 2000:
+                self.buffer.append((self.session_id, now, rr, hr, self.device_id))
+        if now - self.last_flush >= self.flush_interval:
+            self.flush()
+
+    def flush(self):
+        if not self.buffer:
+            return
+        self.conn.executemany(
+            "INSERT INTO rr_intervals (session_id, ts, rr_ms, hr_bpm, device_id) VALUES (?,?,?,?,?)",
+            self.buffer)
+        self.conn.commit()
+        self.buffer.clear()
+        self.last_flush = time.time()
 
 HR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 PMD_CONTROL = "fb005c81-02e7-f387-1cad-8acd2d8df0c8"
@@ -184,6 +288,13 @@ async def run_sensor() -> None:
         print(f"device: {info.get('manufacturer')} {info.get('model')} · fw {info.get('firmware')}")
         await broadcast({"type": "device", **info, "name": device.name, "address": device.address})
 
+        # SQLite logging
+        db = init_db()
+        device_id = get_or_create_device(db, {**info, "name": device.name}, device.address)
+        session_id = create_session(db, device_id, device.name)
+        rr_logger = RRLogger(db, session_id, device_id)
+        print(f"logging to SQLite · device #{device_id} · session #{session_id}")
+
         try:
             bat = await client.read_gatt_char(BATTERY_UUID)
             await broadcast({"type": "battery", "pct": int(bat[0])})
@@ -198,6 +309,7 @@ async def run_sensor() -> None:
         def hr_cb(_, data):
             hr, rr = parse_hr(bytes(data))
             asyncio.create_task(broadcast({"type": "hr", "bpm": hr, "rr": rr}))
+            rr_logger.add(hr, rr)
 
         acc_frames_dumped = 0
 
@@ -235,6 +347,16 @@ async def run_sensor() -> None:
 
         while client.is_connected:
             await asyncio.sleep(1)
+            rr_logger.flush()  # periodic flush
+
+        # flush remaining on disconnect
+        rr_logger.flush()
+        from datetime import datetime, timezone
+        db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?",
+                   (datetime.now(timezone.utc).isoformat(), session_id))
+        db.commit()
+        db.close()
+        print(f"\nsession #{session_id} closed")
 
 
 async def main() -> None:
