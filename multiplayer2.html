@@ -80,12 +80,51 @@ canvas { display:block; position:fixed; inset:0; }
   resize(); addEventListener('resize', resize);
 
   // ── Matter.js physics ──
-  const Engine = Matter.Engine, World = Matter.World, Bodies = Matter.Bodies, Body = Matter.Body;
+  const Engine = Matter.Engine, World = Matter.World, Bodies = Matter.Bodies, Body = Matter.Body, Events = Matter.Events;
   const engine = Engine.create({ gravity: { x: 0, y: 0.3 } });
   const world = engine.world;
 
+  // collision sounds
+  let lastCollisionSound = 0;
+  const COLLISION_GAP = 0.025;
+
+  function playCollisionSound(speed, isWall) {
+    if (!audioCtx || !masterGain) return;
+    const now = audioCtx.currentTime;
+    if (now - lastCollisionSound < COLLISION_GAP) return;
+    lastCollisionSound = now;
+
+    const impact = Math.min(1, speed / 8);
+    if (impact < 0.1) return;
+
+    if (isWall) {
+      // floor/wall: short thud
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(50 + impact * 40, now);
+      osc.frequency.exponentialRampToValueAtTime(25, now + 0.1);
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.05, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      osc.connect(g); g.connect(masterGain);
+      osc.start(now); osc.stop(now + 0.15);
+    } else {
+      // particle-particle: tink from current scale
+      const semitone = SCALE[Math.floor(Math.random() * SCALE.length)];
+      const freq = ROOT * Math.pow(2, (semitone + 12) / 12);
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(impact * 0.02, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.15 + impact * 0.2);
+      osc.connect(g); g.connect(masterGain);
+      osc.start(now); osc.stop(now + 0.4);
+    }
+  }
+
   // walls
-  const wallOpts = { isStatic: true, render: { visible: false }, restitution: 0.6 };
+  const wallOpts = { isStatic: true, render: { visible: false }, restitution: 0.6, label: 'wall' };
   const walls = [
     Bodies.rectangle(W/2, H + 25, W + 100, 50, wallOpts),
     Bodies.rectangle(W/2, -25, W + 100, 50, wallOpts),
@@ -93,6 +132,18 @@ canvas { display:block; position:fixed; inset:0; }
     Bodies.rectangle(W + 25, H/2, 50, H + 100, wallOpts),
   ];
   World.add(world, walls);
+
+  // collision events → sound
+  Events.on(engine, 'collisionStart', (event) => {
+    for (const pair of event.pairs) {
+      const speed = Math.sqrt(
+        Math.pow((pair.bodyA.velocity?.x || 0) - (pair.bodyB.velocity?.x || 0), 2) +
+        Math.pow((pair.bodyA.velocity?.y || 0) - (pair.bodyB.velocity?.y || 0), 2)
+      );
+      const isWall = pair.bodyA.label === 'wall' || pair.bodyB.label === 'wall';
+      playCollisionSound(speed, isWall);
+    }
+  });
 
   // particles linked to physics bodies
   const matterParticles = []; // { body, owner, type, born, maxLife, color, size }
